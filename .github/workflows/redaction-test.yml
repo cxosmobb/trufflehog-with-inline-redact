@@ -1,0 +1,92 @@
+name: Redaction compatibility
+
+on:
+  pull_request:
+  push:
+  merge_group:
+  workflow_dispatch:
+  workflow_call:
+    inputs:
+      base_sha:
+        type: string
+        default: ''
+      merge_sha:
+        type: string
+        default: ''
+      bundle_artifact:
+        type: string
+        default: ''
+
+permissions:
+  contents: read
+
+jobs:
+  redaction-tests:
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 60
+    env:
+      CGO_ENABLED: '0'
+      GOMAXPROCS: '2'
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - name: Check out source without persistent credentials
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          ref: ${{ inputs.base_sha || github.event.pull_request.head.sha || github.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Download proposed upstream merge
+        if: inputs.bundle_artifact != ''
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
+        with:
+          name: ${{ inputs.bundle_artifact }}
+          path: ${{ runner.temp }}/redaction-sync
+      - name: Restore proposed upstream merge
+        if: inputs.bundle_artifact != ''
+        env:
+          MERGE_SHA: ${{ inputs.merge_sha }}
+        run: |
+          set -euo pipefail
+          git config --local core.hooksPath /dev/null
+          git bundle verify "$RUNNER_TEMP/redaction-sync/redaction-sync.bundle"
+          git fetch "$RUNNER_TEMP/redaction-sync/redaction-sync.bundle" HEAD
+          test "$(git rev-parse FETCH_HEAD)" = "$MERGE_SHA"
+          git checkout --detach "$MERGE_SHA"
+      - name: Install Go from the current source tree
+        uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6
+        with:
+          go-version-file: go.mod
+          cache: false
+      - name: Build the production pre-scan command before testing
+        run: |
+          set -euo pipefail
+          binary="$RUNNER_TEMP/trufflehog-redact"
+          if [[ "$RUNNER_OS" == Windows ]]; then
+            binary="$binary.exe"
+          fi
+          go build -p 2 -o "$binary" ./cmd/trufflehog-redact
+          echo "REDACTION_TEST_BINARY=$binary" >> "$GITHUB_ENV"
+      - name: Test every detector contract, exact redaction, and the production command
+        env:
+          REDACTION_TEST_DETECTORS: ''
+          # Linux must execute disk replacement; metadata errors must fail CI.
+          REDACTION_REQUIRE_IN_PLACE: ${{ runner.os == 'Linux' && '1' || '' }}
+        run: |
+          set -euo pipefail
+          test -n "$REDACTION_TEST_BINARY"
+          go test -p 2 -count=1 -timeout=15m ./pkg/redaction/... ./cmd/trufflehog-redact/...
+          go test -p 2 -count=1 ./pkg/detectors/redaction_context.go ./pkg/detectors/redaction_context_test.go
+      - name: Test and review the current static detector inventory
+        run: |
+          set -euo pipefail
+          go test -p 2 -count=1 ./scripts/redaction-audit.go ./scripts/redaction-audit_test.go
+          go run ./scripts/redaction-audit.go > "$RUNNER_TEMP/redaction-detector-schema.json"
+          cmp pkg/redaction/detector-schema.json "$RUNNER_TEMP/redaction-detector-schema.json"

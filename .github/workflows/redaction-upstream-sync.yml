@@ -1,0 +1,180 @@
+name: Keep redaction fork compatible with upstream
+
+on:
+  schedule:
+    - cron: '23 6 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: redaction-upstream-sync
+  cancel-in-progress: false
+
+jobs:
+  prepare:
+    if: >-
+      github.repository != 'trufflesecurity/trufflehog' &&
+      vars.REDACTION_UPSTREAM_SYNC == 'true' &&
+      github.ref == format('refs/heads/{0}', github.event.repository.default_branch)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    outputs:
+      changed: ${{ steps.merge.outputs.changed }}
+      base_sha: ${{ steps.merge.outputs.base_sha }}
+      upstream_sha: ${{ steps.merge.outputs.upstream_sha }}
+      upstream_branch: ${{ steps.merge.outputs.upstream_branch }}
+      merge_sha: ${{ steps.merge.outputs.merge_sha }}
+      branch: ${{ steps.merge.outputs.branch }}
+    steps:
+      - name: Check out the fork's default branch
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          ref: ${{ github.event.repository.default_branch }}
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Prepare an upstream merge without executing repository code
+        id: merge
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          git config --local core.hooksPath /dev/null
+          git config --local user.name 'github-actions[bot]'
+          git config --local user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          upstream_url=https://github.com/trufflesecurity/trufflehog.git
+          upstream_ref=$(git ls-remote --symref "$upstream_url" HEAD | awk '$1 == "ref:" && $3 == "HEAD" { print $2 }')
+          [[ "$upstream_ref" == refs/heads/* ]]
+          git check-ref-format "$upstream_ref"
+          git fetch --no-tags "$upstream_url" "$upstream_ref:refs/remotes/upstream/current"
+          base_sha=$(git rev-parse HEAD)
+          upstream_sha=$(git rev-parse refs/remotes/upstream/current)
+          upstream_branch=${upstream_ref#refs/heads/}
+          branch="redaction/upstream-${upstream_sha:0:12}-on-${base_sha:0:12}"
+          echo "base_sha=$base_sha" >> "$GITHUB_OUTPUT"
+          echo "upstream_sha=$upstream_sha" >> "$GITHUB_OUTPUT"
+          echo "upstream_branch=$upstream_branch" >> "$GITHUB_OUTPUT"
+          echo "branch=$branch" >> "$GITHUB_OUTPUT"
+          if git merge-base --is-ancestor "$upstream_sha" HEAD; then
+            echo 'changed=false' >> "$GITHUB_OUTPUT"
+            echo 'The fork already contains the upstream commit.' >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+          gh auth setup-git --hostname github.com
+          if git ls-remote --exit-code --heads origin "$branch" >/dev/null; then
+            echo 'changed=false' >> "$GITHUB_OUTPUT"
+            echo "An existing proposal branch ($branch) already records this revision. Review its pull request or rerun its checks." >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          else
+            lookup_status=$?
+            # Exit 2 means no matching branch; authentication/network failures must fail.
+            if [[ "$lookup_status" != 2 ]]; then
+              exit "$lookup_status"
+            fi
+          fi
+          if ! git -c commit.gpgsign=false merge --no-ff --no-edit "$upstream_sha"; then
+            git merge --abort
+            echo '::error::Upstream merge conflicts require maintainer resolution. No branch was pushed.'
+            exit 1
+          fi
+          merge_sha=$(git rev-parse HEAD)
+          git bundle create "$RUNNER_TEMP/redaction-sync.bundle" HEAD "^$base_sha"
+          echo "merge_sha=$merge_sha" >> "$GITHUB_OUTPUT"
+          echo 'changed=true' >> "$GITHUB_OUTPUT"
+      - name: Save the proposed merge for isolated validation
+        if: steps.merge.outputs.changed == 'true'
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
+        with:
+          name: redaction-sync-${{ github.run_id }}
+          path: ${{ runner.temp }}/redaction-sync.bundle
+          if-no-files-found: error
+          retention-days: 2
+
+  validate:
+    needs: prepare
+    if: needs.prepare.outputs.changed == 'true'
+    permissions:
+      contents: read
+    uses: ./.github/workflows/redaction-test.yml
+    with:
+      base_sha: ${{ needs.prepare.outputs.base_sha }}
+      merge_sha: ${{ needs.prepare.outputs.merge_sha }}
+      bundle_artifact: redaction-sync-${{ github.run_id }}
+
+  propose:
+    needs: [prepare, validate]
+    if: >-
+      always() && !cancelled() && needs.prepare.result == 'success' &&
+      needs.prepare.outputs.changed == 'true' &&
+      (needs.validate.result == 'success' || needs.validate.result == 'failure')
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write
+      pull-requests: write
+      statuses: write
+    steps:
+      - name: Check out the known base without persistent credentials
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          ref: ${{ needs.prepare.outputs.base_sha }}
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Download the proposed merge
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
+        with:
+          name: redaction-sync-${{ github.run_id }}
+          path: ${{ runner.temp }}/redaction-sync
+      - name: Publish only the exact tested commit and enable merge after successful checks
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          BASE_BRANCH: ${{ github.event.repository.default_branch }}
+          BASE_SHA: ${{ needs.prepare.outputs.base_sha }}
+          MERGE_SHA: ${{ needs.prepare.outputs.merge_sha }}
+          UPSTREAM_SHA: ${{ needs.prepare.outputs.upstream_sha }}
+          UPSTREAM_BRANCH: ${{ needs.prepare.outputs.upstream_branch }}
+          SYNC_BRANCH: ${{ needs.prepare.outputs.branch }}
+          VALIDATION_STATUS: ${{ needs.validate.result }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          set -euo pipefail
+          [[ "$BASE_SHA" =~ ^[0-9a-f]{40}$ && "$MERGE_SHA" =~ ^[0-9a-f]{40}$ && "$UPSTREAM_SHA" =~ ^[0-9a-f]{40}$ ]]
+          git config --local core.hooksPath /dev/null
+          git bundle verify "$RUNNER_TEMP/redaction-sync/redaction-sync.bundle"
+          git fetch "$RUNNER_TEMP/redaction-sync/redaction-sync.bundle" HEAD
+          test "$(git rev-parse FETCH_HEAD)" = "$MERGE_SHA"
+          test "$(git rev-parse "$MERGE_SHA^1")" = "$BASE_SHA"
+          test "$(git rev-parse "$MERGE_SHA^2")" = "$UPSTREAM_SHA"
+          test "$(gh api "repos/$GH_REPO/git/ref/heads/$BASE_BRANCH" --jq .object.sha)" = "$BASE_SHA"
+          gh auth setup-git --hostname github.com
+          git push origin "$MERGE_SHA:refs/heads/$SYNC_BRANCH"
+          cat > "$RUNNER_TEMP/redaction-sync-pr.md" <<EOF
+          Merge trufflesecurity/trufflehog $UPSTREAM_BRANCH at $UPSTREAM_SHA while retaining inline source redaction.
+
+          Linux and Windows redaction validation: **$VALIDATION_STATUS** ([workflow run]($RUN_URL)), performed on this exact merge commit ($MERGE_SHA). The complete detector inventory, all-detector in-place corpus, and independently specified source fixtures must pass; inventory changes require reviewed policies and fixtures.
+
+          Successful validation enables protected auto-merge. Failed validation leaves this proposal in draft for repair, with a failing required status. No compatibility failure is bypassed or automatically repaired.
+          EOF
+          args=()
+          state=failure
+          if [[ "$VALIDATION_STATUS" == success ]]; then
+            state=success
+          else
+            args+=(--draft)
+          fi
+          pr_url=$(gh pr create "${args[@]}" --base "$BASE_BRANCH" --head "$SYNC_BRANCH" \
+            --title "Update upstream TruffleHog (${UPSTREAM_SHA:0:12})" \
+            --body-file "$RUNNER_TEMP/redaction-sync-pr.md")
+          current=$(gh pr view "$pr_url" --json headRefOid,baseRefOid,state --jq '[.headRefOid, .baseRefOid, .state] | @tsv')
+          test "$current" = "$(printf '%s\t%s\tOPEN' "$MERGE_SHA" "$BASE_SHA")"
+          test "$(gh api "repos/$GH_REPO/git/ref/heads/$SYNC_BRANCH" --jq .object.sha)" = "$MERGE_SHA"
+          gh api --method POST "repos/$GH_REPO/statuses/$MERGE_SHA" \
+            -f state="$state" -f context=redaction-compatibility \
+            -f description="Linux and Windows redaction validation: $VALIDATION_STATUS" \
+            -f target_url="$RUN_URL"
+          if [[ "$state" == success ]]; then
+            gh pr merge "$pr_url" --auto --merge --match-head-commit "$MERGE_SHA"
+          fi
+          echo "Upstream proposal: $pr_url (validation: $VALIDATION_STATUS)" >> "$GITHUB_STEP_SUMMARY"

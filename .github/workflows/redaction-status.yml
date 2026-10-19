@@ -1,0 +1,96 @@
+name: Report redaction compatibility
+
+on:
+  workflow_run:
+    workflows: [Redaction compatibility]
+    types: [completed]
+
+permissions: {}
+
+jobs:
+  publish-status:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      actions: read
+      checks: read
+      contents: read
+      pull-requests: read
+      statuses: write
+    steps:
+      # This trusted default-branch workflow never checks out proposed source,
+      # restores a cache, downloads artifacts, or runs repository scripts.
+      - name: Verify the source run and report its complete matrix result
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          RUN_ID: ${{ github.event.workflow_run.id }}
+          RUN_ATTEMPT: ${{ github.event.workflow_run.run_attempt }}
+          RUN_SHA: ${{ github.event.workflow_run.head_sha }}
+        run: |
+          set -euo pipefail
+          [[ "$RUN_ID" =~ ^[0-9]+$ && "$RUN_ATTEMPT" =~ ^[0-9]+$ && "$RUN_SHA" =~ ^[0-9a-f]{40}$ ]]
+          workflow_id=$(gh api "repos/$GH_REPO/actions/workflows/redaction-test.yml" --jq .id)
+          gh api "repos/$GH_REPO/actions/runs/$RUN_ID/attempts/$RUN_ATTEMPT" > "$RUNNER_TEMP/redaction-run.json"
+          jq -e --arg repo "$GH_REPO" --arg sha "$RUN_SHA" --argjson workflow "$workflow_id" \
+            --argjson run "$RUN_ID" --argjson attempt "$RUN_ATTEMPT" '
+            .repository.full_name == $repo and .workflow_id == $workflow and
+            (.path | split("@")[0]) == ".github/workflows/redaction-test.yml" and
+            .id == $run and .run_attempt == $attempt and
+            .head_sha == $sha and .status == "completed" and
+            (.event == "pull_request" or .event == "push" or
+             .event == "merge_group" or .event == "workflow_dispatch")
+          ' "$RUNNER_TEMP/redaction-run.json" >/dev/null
+          suite_id=$(jq -r .check_suite_id "$RUNNER_TEMP/redaction-run.json")
+          [[ "$suite_id" =~ ^[0-9]+$ ]]
+          gh api "repos/$GH_REPO/check-suites/$suite_id" > "$RUNNER_TEMP/redaction-suite.json"
+          test "$(jq -r .app.id "$RUNNER_TEMP/redaction-suite.json")" = 15368
+          suite_sha=$(jq -r .head_sha "$RUNNER_TEMP/redaction-suite.json")
+          [[ "$suite_sha" =~ ^[0-9a-f]{40}$ ]]
+          status_shas=("$RUN_SHA")
+          event=$(jq -r .event "$RUNNER_TEMP/redaction-run.json")
+          if [[ "$event" == pull_request ]]; then
+            gh api --paginate --slurp "repos/$GH_REPO/commits/$RUN_SHA/pulls?per_page=100" > "$RUNNER_TEMP/redaction-pulls.json"
+            pr_number=$(jq -r --arg repo "$GH_REPO" --arg sha "$RUN_SHA" '
+              [ .[][] | select(.state == "open" and .head.sha == $sha and .base.repo.full_name == $repo) ][0].number // empty
+            ' "$RUNNER_TEMP/redaction-pulls.json")
+            if [[ -z "$pr_number" ]]; then
+              echo 'No open pull request retains the tested head; no status changed.' >> "$GITHUB_STEP_SUMMARY"
+              exit 0
+            fi
+            gh api "repos/$GH_REPO/pulls/$pr_number" > "$RUNNER_TEMP/redaction-pr.json"
+            test "$(jq -r .head.sha "$RUNNER_TEMP/redaction-pr.json")" = "$RUN_SHA"
+            test "$(jq -r .state "$RUNNER_TEMP/redaction-pr.json")" = open
+            base_sha=$(jq -r .base.sha "$RUNNER_TEMP/redaction-pr.json")
+            [[ "$base_sha" =~ ^[0-9a-f]{40}$ ]]
+            # The tests explicitly check out the PR head. Strict protection
+            # requires this revision to contain the current protected base.
+            test "$(gh api "repos/$GH_REPO/compare/$base_sha...$RUN_SHA" --jq .merge_base_commit.sha)" = "$base_sha"
+            if [[ "$suite_sha" != "$RUN_SHA" ]]; then
+              # GitHub may evaluate required checks on its synthetic PR merge.
+              # Report there only if it is current and has the tested head tree.
+              test "$(jq -r .merge_commit_sha "$RUNNER_TEMP/redaction-pr.json")" = "$suite_sha"
+              test "$(gh api "repos/$GH_REPO/git/commits/$suite_sha" --jq .tree.sha)" = \
+                "$(gh api "repos/$GH_REPO/git/commits/$RUN_SHA" --jq .tree.sha)"
+              status_shas+=("$suite_sha")
+            fi
+          else
+            test "$suite_sha" = "$RUN_SHA"
+          fi
+          gh api --paginate --slurp "repos/$GH_REPO/actions/runs/$RUN_ID/attempts/$RUN_ATTEMPT/jobs?per_page=100" > "$RUNNER_TEMP/redaction-jobs.json"
+          state=failure
+          conclusion=$(jq -r .conclusion "$RUNNER_TEMP/redaction-run.json")
+          if [[ "$conclusion" == success ]] && jq -e '
+            [.[].jobs[] | select(.name == "redaction-tests (ubuntu-latest)" or .name == "redaction-tests (windows-latest)")] as $jobs |
+            ($jobs | length) == 2 and ($jobs | map(.name) | unique | length) == 2 and
+            all($jobs[]; .status == "completed" and .conclusion == "success")
+          ' "$RUNNER_TEMP/redaction-jobs.json" >/dev/null; then
+            state=success
+          fi
+          run_url=$(jq -r .html_url "$RUNNER_TEMP/redaction-run.json")
+          for sha in "${status_shas[@]}"; do
+            gh api --method POST "repos/$GH_REPO/statuses/$sha" \
+              -f state="$state" -f context=redaction-compatibility \
+              -f description="Linux and Windows redaction validation: $conclusion" \
+              -f target_url="$run_url"
+          done

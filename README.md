@@ -18,6 +18,13 @@
 
 ## Source redaction in this fork
 
+[![Redaction compatibility](https://github.com/cxosmobb/trufflehog-with-inline-redact/actions/workflows/redaction-test.yml/badge.svg)](https://github.com/cxosmobb/trufflehog-with-inline-redact/actions/workflows/redaction-test.yml)
+
+This public fork is maintained at [cxosmobb/trufflehog-with-inline-redact](https://github.com/cxosmobb/trufflehog-with-inline-redact).
+GitHub Actions checks current upstream updates against the complete redaction
+corpus before integration. Failed checks and merge conflicts block updates;
+future upstream incompatibilities require a repair rather than bypassing tests.
+
 Build `go build -o trufflehog-redact ./cmd/trufflehog-redact`, then run
 `trufflehog-redact --in-place ./imported-source` before giving the imported
 source to a downstream scanner. This command overwrites the original source
