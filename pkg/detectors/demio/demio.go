@@ -50,6 +50,9 @@ func (s Scanner) FromData(ctx context.Context, verify bool, data []byte) (result
 				Raw:          []byte(resMatch),
 				SecretParts:  map[string]string{"key": resMatch},
 			}
+			if detectors.SourceRedactionEnabled(ctx) {
+				s1.SecretParts["secret"] = resIdMatch
+			}
 
 			if verify {
 				url := fmt.Sprintf("https://my.demio.com/api/v1/ping/query?api_key=%s&api_secret=%s", resMatch, resIdMatch)

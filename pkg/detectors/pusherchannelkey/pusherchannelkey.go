@@ -78,6 +78,9 @@ func (s Scanner) FromData(ctx context.Context, verify bool, data []byte) (result
 					},
 					RawV2: []byte(app + key),
 				}
+				if detectors.SourceRedactionEnabled(ctx) {
+					s1.SecretParts["secret"] = secret
+				}
 
 				if verify {
 					isVerified, verificationErr := verifyPusherChannelKey(ctx, client, app, key, secret)

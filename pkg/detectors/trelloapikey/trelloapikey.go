@@ -51,6 +51,9 @@ func (s Scanner) FromData(ctx context.Context, verify bool, data []byte) (result
 					Raw:          []byte(resMatch),
 					SecretParts:  map[string]string{"key": resMatch},
 				}
+				if detectors.SourceRedactionEnabled(ctx) {
+					s1.SecretParts["token"] = token
+				}
 
 				if verify {
 					req, err := http.NewRequestWithContext(ctx, "GET", "https://api.trello.com/1/members/me?key="+resMatch+"&token="+token, nil)

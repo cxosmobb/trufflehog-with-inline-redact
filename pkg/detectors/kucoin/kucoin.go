@@ -65,6 +65,9 @@ func (s Scanner) FromData(ctx context.Context, verify bool, data []byte) (result
 					},
 					RawV2: []byte(resKeyMatch + resPassphraseMatch),
 				}
+				if detectors.SourceRedactionEnabled(ctx) {
+					s1.SecretParts["secret"] = resSecretMatch
+				}
 
 				if verify {
 

@@ -81,6 +81,9 @@ func (s Scanner) FromData(ctx context.Context, verify bool, data []byte) (result
 				SecretParts:  map[string]string{"key": key},
 				ExtraData:    make(map[string]string),
 			}
+			if detectors.SourceRedactionEnabled(ctx) {
+				result.SecretParts["secret"] = secret
+			}
 
 			if verify {
 				isVerified, verificationErr := v1.VerifyGoDaddySecret(ctx, s.getClient(), prod, v1.MakeAuthHeaderValue(key, secret))

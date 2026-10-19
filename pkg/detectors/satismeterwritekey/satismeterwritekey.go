@@ -71,6 +71,9 @@ func (s Scanner) FromData(ctx context.Context, verify bool, data []byte) (result
 					},
 					RawV2: []byte(projectID + writeKey),
 				}
+				if detectors.SourceRedactionEnabled(ctx) {
+					s1.SecretParts["token"] = token
+				}
 
 				if verify {
 					isVerified, verificationErr := verifySatisMeterWriteKey(ctx, client, projectID, writeKey, token)

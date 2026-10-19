@@ -73,6 +73,9 @@ func (s Scanner) FromData(ctx context.Context, verify bool, data []byte) (result
 					},
 					RawV2: []byte(portalLink + email),
 				}
+				if detectors.SourceRedactionEnabled(ctx) {
+					s1.SecretParts["key"] = apiKey
+				}
 
 				if verify {
 					isVerified, verificationErr := verifyClickHelp(ctx, client, portalLink, email, apiKey)

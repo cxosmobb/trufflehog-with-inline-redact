@@ -55,6 +55,9 @@ func (s Scanner) FromData(ctx context.Context, verify bool, data []byte) (result
 				Raw:          []byte(emailMatch),
 				SecretParts:  map[string]string{"key": emailMatch},
 			}
+			if detectors.SourceRedactionEnabled(ctx) {
+				s1.SecretParts["password"] = resPassword
+			}
 
 			if verify {
 				isVerified, verificationErr := verifyMatch(ctx, client, emailMatch, resPassword)

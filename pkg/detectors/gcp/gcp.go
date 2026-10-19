@@ -123,6 +123,12 @@ func (s Scanner) FromData(ctx context.Context, verify bool, data []byte) (result
 			},
 		}
 
+		if detectors.SourceRedactionEnabled(ctx) {
+			// Marshaling the parsed struct discards duplicate private_key fields.
+			// Source editing must inspect every original credential value.
+			result.SecretParts["key"] = key
+		}
+
 		// Populate private_key_id by matching the private key to certificates from the x509 endpoint.
 		// Only do this when verification is enabled to avoid network calls during fast scans/tests.
 		// Falls back to the value present in the found data when fetching fails or is disabled.

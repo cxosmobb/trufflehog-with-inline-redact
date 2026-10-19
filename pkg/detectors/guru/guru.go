@@ -55,6 +55,9 @@ func (s Scanner) FromData(ctx context.Context, verify bool, data []byte) (result
 				Raw:          []byte(unameMatch),
 				SecretParts:  map[string]string{"key": unameMatch},
 			}
+			if detectors.SourceRedactionEnabled(ctx) {
+				s1.SecretParts["password"] = keyMatch
+			}
 
 			if verify {
 				data := fmt.Sprintf("%s:%s", unameMatch, keyMatch)

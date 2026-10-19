@@ -903,7 +903,7 @@ import (
 	"github.com/trufflesecurity/trufflehog/v3/pkg/pb/detector_typepb"
 )
 
-func buildDetectorList() []detectors.Detector {
+func buildDetectorList(includeAll ...bool) []detectors.Detector {
 	dets := []detectors.Detector{
 		&abyssale.Scanner{},
 		// &abstract.Scanner{},
@@ -1832,6 +1832,9 @@ func buildDetectorList() []detectors.Detector {
 		&zulipchat.Scanner{},
 	}
 
+	if len(includeAll) > 0 && includeAll[0] {
+		return dets
+	}
 	dets = slices.DeleteFunc(dets, func(d detectors.Detector) bool {
 		switch d.(type) {
 		case *pinecone.Scanner:
@@ -1917,7 +1920,10 @@ func buildDetectorList() []detectors.Detector {
 }
 
 func DefaultDetectors() []detectors.Detector {
-	detectorList := buildDetectorList()
+	return initializeDetectors(buildDetectorList())
+}
+
+func initializeDetectors(detectorList []detectors.Detector) []detectors.Detector {
 
 	// Automatically initialize all detectors that implement
 	// EndpointCustomizer and/or CloudProvider interfaces.

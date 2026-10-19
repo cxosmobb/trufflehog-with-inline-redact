@@ -83,6 +83,9 @@ func (s Scanner) FromData(ctx context.Context, verify bool, data []byte) (result
 				Raw:          []byte(apiKey),
 				SecretParts:  map[string]string{"key": apiKey},
 			}
+			if detectors.SourceRedactionEnabled(ctx) {
+				s1.SecretParts["secret"] = apiSecret
+			}
 
 			if verify {
 				isVerified, verificationErr := verifyBitfinex(ctx, s.getClient(), apiKey, apiSecret)

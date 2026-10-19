@@ -16,6 +16,14 @@
 
 ---
 
+## Source redaction in this fork
+
+Build `go build -o trufflehog-redact ./cmd/trufflehog-redact`, then run
+`trufflehog-redact --in-place ./imported-source` before giving the imported
+source to a downstream scanner. This command overwrites the original source
+credential values with `REDACTED`. See [usage and guarantees](docs/source-redaction.md)
+and [fork maintenance](docs/redaction-maintenance.md).
+
 # :mag_right: _Now Scanning_
 
 <div align="center">

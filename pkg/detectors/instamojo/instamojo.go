@@ -55,6 +55,9 @@ func (s Scanner) FromData(ctx context.Context, verify bool, data []byte) (result
 				Raw:          []byte(resClientId),
 				SecretParts:  map[string]string{"key": resClientId},
 			}
+			if detectors.SourceRedactionEnabled(ctx) {
+				s1.SecretParts["client_secret"] = resSecret
+			}
 
 			if verify {
 				client := s.client

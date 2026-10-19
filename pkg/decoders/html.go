@@ -106,6 +106,12 @@ func (d *HTML) FromChunk(chunk *sources.Chunk) *DecodableChunk {
 	if !feature.HTMLDecoderEnabled.Load() {
 		return nil
 	}
+	return d.FromChunkForRedaction(chunk)
+}
+
+// FromChunkForRedaction audits HTML even when ordinary scanning's rollout flag
+// is off. It avoids changing global flags while processing imported source.
+func (d *HTML) FromChunkForRedaction(chunk *sources.Chunk) *DecodableChunk {
 	if chunk == nil || len(chunk.Data) == 0 {
 		return nil
 	}

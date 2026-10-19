@@ -79,6 +79,9 @@ func (s Scanner) FromData(ctx context.Context, verify bool, data []byte) (result
 				Redacted:     id,
 				ExtraData:    map[string]string{},
 			}
+			if detectors.SourceRedactionEnabled(ctx) {
+				result.SecretParts["secret"] = secret
+			}
 
 			var isVerified bool
 			var verificationErr error

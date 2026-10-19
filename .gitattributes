@@ -1,2 +1,3 @@
 *.go text eol=lf
 *.md text eol=lf
+pkg/redaction/detector-schema.json text eol=lf

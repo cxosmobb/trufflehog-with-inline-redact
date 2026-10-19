@@ -111,6 +111,18 @@ func (d *EscapedUnicode) Type() detectorspb.DecoderType {
 }
 
 func (d *EscapedUnicode) FromChunk(chunk *sources.Chunk) *DecodableChunk {
+	return d.fromChunk(chunk, false)
+}
+
+// FromChunkForRedaction preserves the decoder's recognition rules while
+// assembling replacements in source order. The ordinary reverse-splice decoder
+// repeatedly copies the tail for escape-dense inputs; redaction treats source
+// bytes as untrusted and must keep this audit linear in the source length.
+func (d *EscapedUnicode) FromChunkForRedaction(chunk *sources.Chunk) *DecodableChunk {
+	return d.fromChunk(chunk, true)
+}
+
+func (d *EscapedUnicode) fromChunk(chunk *sources.Chunk, linear bool) *DecodableChunk {
 	if chunk == nil || len(chunk.Data) == 0 {
 		return nil
 	}
@@ -125,32 +137,38 @@ func (d *EscapedUnicode) FromChunk(chunk *sources.Chunk) *DecodableChunk {
 	// This prevents conflicts where multiple patterns match the same input
 
 	hasBackslash := bytes.IndexByte(chunkData, '\\') >= 0
+	decodePattern := decodeWithPattern
+	decodePoints := decodeCodePointAt
+	if linear {
+		decodePattern = decodeWithPatternLinear
+		decodePoints = decodeCodePointAtLinear
+	}
 
 	// Long escape format (8 hex digits) - highest priority
 	if hasBackslash && longEscapePat.Match(chunkData) {
 		matched = true
-		chunkData = decodeLongEscape(chunkData)
+		chunkData = decodePattern(chunkData, longEscapePat)
 	} else if hasBackslash && braceEscapePat.Match(chunkData) {
 		matched = true
-		chunkData = decodeBraceEscape(chunkData)
+		chunkData = decodePattern(chunkData, braceEscapePat)
 	} else if hasBackslash && perlEscapePat.Match(chunkData) {
 		matched = true
-		chunkData = decodePerlEscape(chunkData)
+		chunkData = decodePattern(chunkData, perlEscapePat)
 	} else if bytes.Contains(chunkData, htmlAnchor) && htmlEscapePat.Match(chunkData) {
 		matched = true
-		chunkData = decodeHtmlEscape(chunkData)
+		chunkData = decodePattern(chunkData, htmlEscapePat)
 	} else if bytes.Contains(chunkData, percentAnchor) && percentEscapePat.Match(chunkData) {
 		matched = true
-		chunkData = decodePercentEscape(chunkData)
+		chunkData = decodePattern(chunkData, percentEscapePat)
 	} else if hasBackslash && escapePat.Match(chunkData) {
 		matched = true
-		chunkData = decodeEscaped(chunkData)
+		chunkData = decodePattern(chunkData, escapePat)
 	} else if codePointIdx := codePointMatches(chunkData); len(codePointIdx) > 0 {
 		matched = true
-		chunkData = decodeCodePointAt(chunkData, codePointIdx)
+		chunkData = decodePoints(chunkData, codePointIdx)
 	} else if hasBackslash && cssEscapePat.Match(chunkData) {
 		matched = true
-		chunkData = decodeCssEscape(chunkData)
+		chunkData = decodePattern(chunkData, cssEscapePat)
 		// } else if hexEscapePat.Match(chunkData) {
 		// 	matched = true
 		// 	chunkData = decodeHexEscape(chunkData)
@@ -174,6 +192,39 @@ func (d *EscapedUnicode) FromChunk(chunk *sources.Chunk) *DecodableChunk {
 	} else {
 		return nil
 	}
+}
+
+func decodeWithPatternLinear(input []byte, re *regexp.Regexp) []byte {
+	return decodeMatchesLinear(input, re.FindAllSubmatchIndex(input, -1), false)
+}
+
+func decodeCodePointAtLinear(input []byte, indices [][]int) []byte {
+	return decodeMatchesLinear(input, indices, true)
+}
+
+func decodeMatchesLinear(input []byte, indices [][]int, codePoints bool) []byte {
+	if len(indices) == 0 {
+		return input
+	}
+	var output bytes.Buffer
+	output.Grow(len(input))
+	position := 0
+	for _, match := range indices {
+		start, end := match[0], match[1]
+		hexStart, hexEnd := match[2], match[3]
+		if codePoints && end != hexEnd && input[end-1] != spaceChar {
+			end--
+		}
+		value, err := strconv.ParseUint(string(input[hexStart:hexEnd]), 16, 32)
+		if err != nil || value > utf8.MaxRune {
+			continue
+		}
+		output.Write(input[position:start])
+		output.WriteRune(rune(value))
+		position = end
+	}
+	output.Write(input[position:])
+	return output.Bytes()
 }
 
 // Unicode characters are encoded as 1 to 4 bytes per rune.

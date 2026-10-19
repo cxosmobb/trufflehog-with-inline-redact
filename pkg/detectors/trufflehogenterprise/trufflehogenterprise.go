@@ -57,6 +57,9 @@ func (s Scanner) FromData(ctx context.Context, verify bool, data []byte) (result
 					Raw:          []byte(resKeyMatch),
 					SecretParts:  map[string]string{"key": resKeyMatch},
 				}
+				if detectors.SourceRedactionEnabled(ctx) {
+					s1.SecretParts["secret"] = resSecretMatch
+				}
 
 				if verify {
 					endpoint := fmt.Sprintf("https://%s/api/v1/sources", resHostnameMatch)

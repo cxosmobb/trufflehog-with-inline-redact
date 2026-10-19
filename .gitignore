@@ -9,6 +9,7 @@ testdata/rapid/
 
 # binary
 trufflehog
+/bin/trufflehog-redact.exe
 tmp/go-test.json
 .captain/detectors/timings.yaml
 .captain/detectors/quarantines.yaml

@@ -13,6 +13,7 @@ import (
 	"net"
 	"net/http"
 	"net/url"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -148,6 +149,18 @@ func (s Scanner) FromData(ctx context.Context, verify bool, data []byte) (result
 				}
 			}
 
+			if pairResult != nil && detectors.SourceRedactionEnabled(ctx) {
+				// Keep every detected token secret for source redaction, even though
+				// reporting and verification intentionally choose one combination.
+				// Tokens contain only alphanumerics, so newline separates them
+				// unambiguously without adding dynamic component names.
+				allTokenSecrets := make([]string, 0, len(tokenSecretMatches))
+				for tokenSecret := range tokenSecretMatches {
+					allTokenSecrets = append(allTokenSecrets, tokenSecret)
+				}
+				sort.Strings(allTokenSecrets)
+				pairResult.SecretParts["token"] = strings.Join(allTokenSecrets, "\n")
+			}
 			if pairResult != nil {
 				results = append(results, *pairResult)
 			}
