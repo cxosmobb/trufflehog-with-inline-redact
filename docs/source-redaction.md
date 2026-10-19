@@ -117,16 +117,22 @@ ignores cancellation; use process-level resource limits for hostile imports.
 
 ## Coverage and updates
 
+The public fork is [cxosmobb/trufflehog-with-inline-redact](https://github.com/cxosmobb/trufflehog-with-inline-redact).
+The current reviewed upstream revision is `e63326d6545de8f425d93ce24078c6e68d83f70e`
+from upstream `main` on 2026-10-19. It adds SonarQube to the original 897-instance
+baseline; all 898 registered scanner instances use the same source-redaction
+policy and mandatory coverage gates.
+
 On 2026-10-19, the compiled Linux command was exercised in WSL on native Linux
-storage: **897/897 scanner samples** passed actual file replacement and a second
-unchanged pass. The full-registry directory batch contained **898 files** and
+storage: **898/898 scanner samples** passed actual file replacement and a second
+unchanged pass. The full-registry directory batch contained **899 files** and
 passed two command runs. Fifteen additional fixtures matched independently
 specified output bytes, including structured duplicates and supported encodings.
 The engine/security/schema suite and registry-completeness audit also passed.
 Successful Windows full-descriptor replacement remains unverified under the
 local token, which lacks the required audit-security privilege.
 
-The tested baseline has **897/897 registered scanner instances** with a positive
+The tested baseline has **898/898 registered scanner instances** with a positive
 offline redaction fixture, with zero detection or mapping gaps. This includes
 scanner versions and feature-gated implementations, plus the upstream registry's
 known Guru and Tru omissions. A registry-completeness test compares the redaction

@@ -39,16 +39,27 @@ identity verification, and source-edit copying. Private staging, root pinning,
 security metadata restoration, rollback, work budgets and residual detection
 remain enforced. No upstream detector policy or reviewed inventory was relaxed.
 
+## Windows runner path repair on 2026-10-19
+
+The first published Windows CI run exposed a functional refusal of legitimate
+8.3 paths: its `RUNNER~1` temporary-directory spelling differed from the long
+path returned by the open handle. The new native regression failed before the
+repair and passes afterward. The guard now derives short aliases from the
+resolved handle target and accepts each component's long or short spelling.
+It never resolves the caller's potentially symbolic spelling to authorize it.
+Direct long paths retain their fast path; real directory-junction rejection
+passes, and existing file/ancestor-symlink rejection remains enforced.
+
 ## Validation
 
-The complete offline redaction corpus passes for **897/897 registered scanner
+The complete offline redaction corpus passes for **898/898 registered scanner
 instances**, with no detection or mapping gaps. This is one positive fixture per
 scanner, supplemented by exact-source, structured-credential, encoding,
 idempotence, failure, cancellation, resource-budget and confidentiality tests.
 
 The refactored Linux command passes actual in-place writes and a second unchanged
-pass for all 897 scanner samples. The full production-registry command passes a
-nested 898-file tree on two runs. Fifteen separate fixtures specify exact
+pass for all 898 scanner samples. The full production-registry command passes a
+nested 899-file tree on two runs. Fifteen separate fixtures specify exact
 expected source bytes independently; connection-parse failure and Box ambiguity
 regressions preserve their entire original batches. Linux ownership, extended
 attribute and POSIX ACL tests also pass on native Linux storage in WSL.
@@ -84,7 +95,7 @@ are also run.
   copy failures and other operating systems block in-place replacement.
 - Only file contents are redacted. Git history, filenames, alternate data
   streams, extended attributes and other metadata can retain credentials.
-- The positive corpus covers the 897 registered scanner instances. Twenty-six
+- The positive corpus covers the 898 registered scanner instances. Twenty-six
   intentionally disabled upstream implementations remain outside this command.
   Ambiguous Box OAuth layouts can be refused when a retained public identifier
   becomes a new post-edit candidate; the original batch remains untouched.

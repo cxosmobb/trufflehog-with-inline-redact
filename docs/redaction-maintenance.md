@@ -4,6 +4,11 @@ Keep the fork's default branch as an upstream-compatible TruffleHog tree with a 
 
 The initial upstream baseline is commit `0e427395344c7039c0b15a1147f5782805685b3e` (2026-10-08). Record the tested upstream commit when publishing each redaction build. Pin the binary version used by the importing pipeline so an upstream update becomes a reviewed release rather than an unannounced production change.
 
+The published fork is [cxosmobb/trufflehog-with-inline-redact](https://github.com/cxosmobb/trufflehog-with-inline-redact).
+The 2026-10-19 update incorporates upstream `main` at
+`e63326d6545de8f425d93ce24078c6e68d83f70e`. Its new SonarQube scanner raises the
+reviewed registry to 898 instances; the exact command corpus contains 899 files.
+
 ## Compatibility checks
 
 Run from the repository root:
