@@ -734,6 +734,7 @@ import (
 	"github.com/trufflesecurity/trufflehog/v3/pkg/detectors/solarwindsobservability"
 	sonarcloudv1 "github.com/trufflesecurity/trufflehog/v3/pkg/detectors/sonarcloud/v1"
 	sonarcloudv2 "github.com/trufflesecurity/trufflehog/v3/pkg/detectors/sonarcloud/v2"
+	"github.com/trufflesecurity/trufflehog/v3/pkg/detectors/sonarqube"
 	"github.com/trufflesecurity/trufflehog/v3/pkg/detectors/sourcegraph"
 	"github.com/trufflesecurity/trufflehog/v3/pkg/detectors/sourcegraphcody"
 	"github.com/trufflesecurity/trufflehog/v3/pkg/detectors/spectralops"
@@ -1660,6 +1661,7 @@ func buildDetectorList(includeAll ...bool) []detectors.Detector {
 		&solarwindsobservability.Scanner{},
 		&sonarcloudv1.Scanner{},
 		&sonarcloudv2.Scanner{},
+		&sonarqube.Scanner{},
 		&sourcegraph.Scanner{},
 		&sourcegraphcody.Scanner{},
 		// &sparkpost.Scanner{},
@@ -1911,6 +1913,8 @@ func buildDetectorList(includeAll ...bool) []detectors.Detector {
 			return !feature.WeightsAndBiasesV2DetectorEnabled.Load()
 		case *kong.Scanner:
 			return !feature.KongKonnectDetectorEnabled.Load()
+		case *sonarqube.Scanner:
+			return !feature.SonarQubeDetectorEnabled.Load()
 		default:
 			return false
 		}
