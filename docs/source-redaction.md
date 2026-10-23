@@ -56,19 +56,21 @@ Get-FileHash .\trufflehog-redact-windows-amd64-<commit>.zip -Algorithm SHA256
 if ($LASTEXITCODE -ne 0) { throw 'Redaction failed; do not run the downstream scanner' }
 ```
 
-Windows `--in-place` requires an already-enabled `SeSecurityPrivilege` and a
-filesystem supporting the complete security descriptor. The executable never
-enables privileges; it refuses replacement if the required access is absent.
-Source-stream mode remains available without that privilege. Use `cmd.exe`
-redirection when byte-preserving stdin/stdout is required, and check the command's
-exit status before using the output. Read the in-place operating constraints below.
+Run Windows `--in-place` from an ordinary PowerShell session on a private NTFS
+import that your account can read and write. Administrator access and
+`SeSecurityPrivilege` are not required. The command rewrites the existing file
+object, preserving its ownership and security descriptor without reading audit
+rules or changing privileges. Read-only, hard-linked or locked changed files
+block the batch before writes begin. Use `cmd.exe` redirection when
+byte-preserving stdin/stdout is required, and check the command's exit status
+before using the output. Read the in-place operating constraints below.
 
 The release workflow runs on standard free public GitHub-hosted runners. It
 publishes only the current default-branch revision after independently verifying
 a successful Linux/Windows compatibility matrix and its required status. A
 read-only Windows job builds with the latest Go patch in the release series
 required by `go.mod`, runs the actual executable through exact source redaction,
-second-pass idempotence and help checks, then creates the ZIP. An isolated
+second-pass idempotence, help and two-file directory in-place checks, then creates the ZIP. The directory checks also require original file identities to survive both passes. An isolated
 publisher validates the archive and checksum without executing repository code
 or the executable. Release tags are `redact-<12-character-source-commit>`.
 
@@ -77,8 +79,7 @@ When a token-created upstream merge has no compatibility run of its own, an
 isolated job requests the first full matrix for that exact current revision.
 Pending or failed runs are not retried automatically; failures withhold releases
 until a maintainer fixes them and reruns compatibility validation. Successful
-Windows source-stream checks do not assert that privilege-dependent in-place
-tests executed.
+Windows releases require successful in-place execution by the packaged executable; a skipped in-place test cannot satisfy that smoke check.
 
 ## Byte preservation and supported encodings
 
@@ -119,24 +120,32 @@ unreadable files are rejected. Use an exclusively owned, private imported tree
 and exclude concurrent writers until the downstream scanner has finished.
 
 Every input is scanned and every changed file staged beside its original before
-the first original is replaced. Source identity, contents, security metadata,
-and staged contents are rechecked before commit and after replacement. Filesystem
+the first original is edited. Source identity, contents, security metadata,
+and staged contents are rechecked before commit and after writing. Filesystem
 operations use a pinned root. Temporary files are private before writing source
 bytes; Windows staging uses a protected ACL rather than relying on mode bits.
-File modes and supported security metadata are retained. A commit error attempts rollback, and the command fails if rollback
-is incomplete. Individual replacement is atomic; a directory batch is **not** a
-filesystem transaction, and interruption/crash during commit can leave a mixed
-batch. Always gate downstream access on successful completion and keep the
-import private until then. In-place replacement changes file identity and breaks
-hard-link aliases to the replaced inode. Linux preserves ownership and extended
-attributes; Windows requires reading and preserving the full owner/group/DACL/
-SACL security descriptor, including audit rules and mandatory integrity labels.
-Windows in-place mode requires an already-enabled `SeSecurityPrivilege`; the
-command never enables privileges or mutates process tokens. Missing access,
-unsupported filesystems and metadata-copy failures block replacement.
-Other operating systems currently
-support stdin mode only. Modification timestamps and all filesystem-specific
-properties are not guaranteed to survive replacement.
+A commit error attempts rollback, including the currently written file; the
+command fails if rollback is incomplete.
+
+On Linux, each replacement is an atomic rename. This changes file identity and
+breaks hard-link aliases to the replaced inode; ownership and supported extended
+attributes are copied onto the replacement. On Windows, all changed originals
+are opened for writing with concurrent write/delete sharing denied before the
+first edit. Hard-linked, read-only, substituted and unavailable files are
+rejected. The command writes and truncates each original through its retained
+handle, flushes it and verifies the exact contents. File identity and the
+original owner/group/DACL/SACL remain intact because the original object and
+its security descriptor are never replaced. Ordinary read/write permissions
+are sufficient; no elevated privilege or token change is used.
+
+A directory batch is **not** a filesystem transaction. Windows same-file writes
+are also **not** individually crash-atomic: abrupt termination or power loss can
+leave a partially written file. Controlled errors attempt to restore the original
+bytes through the retained handles. Keep the import private, keep a separate
+original copy if recovery is required, and start the downstream scanner only
+after successful completion. Other operating systems currently support stdin
+mode only. Modification timestamps and all filesystem-specific properties are
+not guaranteed to survive editing.
 
 Only file contents are scanned. Filenames, Git metadata, extended attributes,
 alternate data streams, and other filesystem metadata can contain secrets and
@@ -168,8 +177,7 @@ scanner and the production command. Fifteen additional fixtures specify exact
 output bytes independently, including structured duplicates and supported
 encodings. The engine/security/schema suite and registry-completeness audit are
 also required. See the compatibility workflow for results for each commit.
-Successful Windows full-descriptor replacement requires audit-security privilege;
-its absence explicitly skips positive cases and exercises safe refusal instead.
+Windows CI also requires actual unprivileged in-place edits for the complete corpus. Security tests cover unchanged file identity, ACLs and refusal of unsafe file aliases.
 
 The current baseline has **899/899 registered scanner instances** with a positive
 offline redaction fixture, with zero detection or mapping gaps. This includes
@@ -236,9 +244,9 @@ REDACTION_REQUIRE_IN_PLACE=1 go test -p 2 -count=1 -timeout=15m ./cmd/trufflehog
 
 Set `REDACTION_TEST_BINARY` to the absolute path of a built production command to
 run command fixtures against that binary. Otherwise they exercise `main` in a
-test subprocess. Linux CI requires successful disk replacement; Windows hosts
-without the complete audit-security access can skip positive in-place tests
-unless `REDACTION_REQUIRE_IN_PLACE=1` is set. Required coverage also rejects short mode and a nonempty `REDACTION_TEST_DETECTORS` filter. Such a skip is not a successful
+test subprocess. Linux and Windows CI require successful in-place edits on supported storage.
+Required coverage also rejects short mode and a nonempty
+`REDACTION_TEST_DETECTORS` filter. A skipped platform test is not a successful
 in-place test.
 
 The reviewed detector schema snapshot also fails when detector files or

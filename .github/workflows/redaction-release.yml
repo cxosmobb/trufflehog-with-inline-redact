@@ -243,9 +243,9 @@ jobs:
           cat > "$RUNNER_TEMP/redaction-release-notes.md" <<EOF
           Windows x64 inline source redactor from commit $RELEASE_SHA.
 
-          The exact revision passed the complete Linux and Windows redaction compatibility matrix. The packaged executable also passed exact source-stream redaction and second-pass idempotence on Windows. Download the ZIP and SHA256SUMS, verify its checksum, and read README.txt before use.
+          The exact revision passed the complete Linux and Windows redaction compatibility matrix. The packaged executable also passed exact source-stream redaction, a nested two-file in-place directory, unchanged original file identities, and second-pass idempotence on Windows. Download the ZIP and SHA256SUMS, verify its checksum, and read README.txt before use.
 
-          In-place Windows replacement requires an already-enabled SeSecurityPrivilege and supported NTFS security metadata. The command never enables privileges; unavailable access blocks replacement. A passing Windows CI job does not claim privilege-dependent replacement tests executed.
+          Run Windows in-place redaction as a standard user on a private NTFS import with ordinary read/write access. Administrator access and SeSecurityPrivilege are not required. Original file security is retained without privilege changes. Hard-linked, read-only or locked changed files block writes. Abrupt termination can leave partially written files; keep a separate original copy if recovery is required and require exit status zero before downstream scanning.
 
           These builds are unsigned. The upstream TruffleHog version number is not reused for fork releases.
           EOF

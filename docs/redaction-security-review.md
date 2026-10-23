@@ -11,7 +11,7 @@ Reproductions use synthetic local credentials; verification remains disabled.
 | Confidentiality: residual structured secrets | Returning the first URI password/SAS signature or the last JSON private key left other values in the source while the audit passed. GCP also normalized away duplicate fields before redaction. | Collect all password/signature/private-key values; request original GCP JSON only in source mode. Tests invoke real JDBC, Azure SAS and GCP detectors and compare exact edited source. |
 | Confidentiality: expanded scanner output | Additive `SecretParts` entries were also serialized by the ordinary TruffleHog JSON printer. | Request extra components only with a source-redaction context. The full scanner corpus checks ordinary results omit each added field and source results contain it. |
 | Confidentiality: diagnostics and temporary files | Detector panic payloads, context logs, invalid flag values, writer errors, and insufficient staging permissions could expose source information. Windows mode `0600` did not restrict ACLs. | Recover panics without payloads, discard detector context logs, sanitize command errors, and enforce private staging before writing bytes. Windows uses and verifies a protected process-user/LocalSystem DACL. |
-| Integrity: filesystem substitutions | Staged bytes were not rechecked; file identity/mode substitutions and parent replacement could redirect or alter writes. Replacing files lost security metadata. | Pin filesystem roots; check canonical paths, identity, contents and security metadata; recheck staging and committed outputs; preserve supported security metadata and attempt bounded rollback on failure. Apply original security metadata before restoring mode bits. |
+| Integrity: filesystem substitutions | Staged bytes were not rechecked; file identity/mode substitutions and parent replacement could redirect or alter writes. Replacing files lost security metadata. | Pin filesystem roots; check canonical paths, identity, contents and security metadata; recheck staging and committed outputs; preserve supported security metadata and attempt bounded rollback on failure. Linux applies original security metadata before restoring mode bits; Windows retains the original object and security descriptor. |
 | Availability: excessive work | Per-character provenance, whole-source multipart detection/HTML parsing, reverse-splicing Unicode escapes, unbounded rechecks, and unlimited directory enumeration amplified input cost. | Compact provenance; use upstream-sized detector/decoder windows; use linear Unicode reconstruction; cap views, patterns, findings, unique edits, detector work, metadata, files and directories; bound rechecks. |
 | Functional correctness and future review | Duplicate multipart combinations exhausted a span budget for the same source occurrences. The static audit omitted some computed map writes/direct assignments, weakening update review. | Deduplicate physical spans before accounting. Strengthen the AST audit and test its dynamic-key/assignment handling; compare a freshly generated inventory in CI. |
 
@@ -50,6 +50,31 @@ It never resolves the caller's potentially symbolic spelling to authorize it.
 Direct long paths retain their fast path; real directory-junction rejection
 passes, and existing file/ancestor-symlink rejection remains enforced.
 
+## Windows standard-user editing
+
+The earlier Windows implementation replaced the source with a staged file and
+copied its complete security descriptor, including the audit SACL. Reading and
+restoring that SACL introduced a `SeSecurityPrivilege` requirement even for files
+the user owned. This was an implementation constraint, not a requirement for
+editing ordinary source-file contents. The previous elevation guidance is
+superseded by the same-file mechanism below.
+
+Windows now retains each original file object. After scanning and private
+staging finish, it acquires read/write handles for every changed file with
+write/delete sharing denied. It validates file identity and contents and rejects
+hard links, read-only files, reparse points and unavailable locks before editing
+any original. It writes, truncates, flushes and verifies through those handles;
+controlled failures restore the current and earlier files through the same
+handles. No original owner, DACL, SACL or integrity label is copied or changed,
+so no audit privilege, Administrator session or token modification is required.
+Microsoft documents [file access and sharing](https://learn.microsoft.com/en-us/windows/win32/api/fileapi/nf-fileapi-createfilea)
+and [reopening the existing object](https://learn.microsoft.com/en-us/windows/win32/api/winbase/nf-winbase-reopenfile).
+
+Same-file writes can be interrupted by process termination or power loss and
+are not crash-atomic. Rollback covers controlled failures, not every operating
+system or storage failure. The importing pipeline must keep the tree private
+and require exit status zero before exposing it downstream.
+
 ## Validation
 
 The current corpus requires positive coverage for **899/899 registered scanner
@@ -65,35 +90,32 @@ regressions preserve their entire original batches. Linux ownership, extended
 attribute and POSIX ACL tests run on native Linux storage. Compatibility CI
 records the passing results for each published revision.
 
-The CLI suite and private staging/canonical-path tests are exercised on Windows
-NTFS. Full-descriptor preservation requires an enabled audit privilege; the local
-token lacks it: 19 privilege-dependent checks skip, along with three unavailable
-symlink checks. The native Windows CLI suite otherwise passes; missing-privilege
-refusal verifies originals remain untouched. The rebuilt Windows executable also
-passes exact UTF-8/CRLF source-stream redaction and idempotence, including both
-passwords in the mixed JDBC DSN. Linux metadata tests execute in
-existing WSL Ubuntu on native Linux storage. The decoder and GCP upstream unit
-suites, static-audit and context tests, workflow lint, and diff whitespace checks
-are also run.
+Windows compatibility requires the actual in-place corpus, exact command fixtures
+and second unchanged pass on NTFS without privileged descriptor copying. The
+release build separately requires the packaged executable to edit two nested
+files, preserve their identities and pass again unchanged, alongside exact
+UTF-8/CRLF source-stream and help checks. Audit-SACL fixture creation can require
+privileged test setup; that optional fixture cannot replace ordinary successful
+in-place tests. Linux metadata tests execute on native Linux storage. The decoder
+and GCP upstream unit suites, static-audit and context tests, workflow lint, and
+diff whitespace checks are also run. See each revision's CI results rather than
+reusing results from the earlier privilege-dependent implementation.
 
 ## Remaining operating constraints
 
 - Gate downstream access on exit status zero, and use an exclusively owned
   imported tree. A malicious concurrent writer cannot be excluded by a
   filesystem-wide compare-and-swap operation; a batch is not crash-atomic.
-- Windows filesystems must retain protected ACLs and stable file identity.
-  The local E: drive did not support those guarantees; the command rejects
-  in-place writes there before source bytes are staged. NTFS tests use a
-  private authorized C: test directory. Windows also requires an already-enabled
-  `SeSecurityPrivilege` to retain per-file audit SACLs. The shipping command
-  does not enable privileges; missing access blocks writes. Stdin mode remains
-  available without that privilege.
-  This follows Microsoft's [full-descriptor access requirements](https://learn.microsoft.com/en-us/windows/win32/secauthz/security-information)
-  and [SACL-setting requirements](https://learn.microsoft.com/en-us/windows/win32/api/aclapi/nf-aclapi-setsecurityinfo).
-- Linux preserves uid/gid and readable extended attributes. Windows preserves
-  the full owner/group/DACL/SACL descriptor, including audit rules and mandatory
-  integrity labels. Unsupported metadata,
-  copy failures and other operating systems block in-place replacement.
+- Windows storage must retain protected staging ACLs and stable file identity.
+  Use a private NTFS import with ordinary read/write access. Files with read-only
+  attributes, hard-link aliases or conflicting access are rejected before the
+  batch is edited. The command does not elevate or modify its token.
+- Linux preserves uid/gid and readable extended attributes by copying them to
+  replacements. Windows retains the existing file object and its owner/group/
+  DACL/SACL, including audit rules and mandatory integrity labels. Unsupported
+  metadata, unavailable access and other operating systems block in-place edits.
+  Windows same-file writes can leave a partially written file after abrupt
+  termination; Linux individual renames remain atomic.
 - Only file contents are redacted. Git history, filenames, alternate data
   streams, extended attributes and other metadata can retain credentials.
 - The positive corpus covers the 899 registered scanner instances. Twenty-six

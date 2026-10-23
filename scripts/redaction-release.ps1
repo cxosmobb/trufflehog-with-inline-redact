@@ -77,6 +77,67 @@ if ($helpResult.Output.Length -ne 0 -or -not $helpResult.Diagnostics.Contains('-
     }
 }
 
+# Query the original file object without changing security settings or privileges.
+Add-Type -TypeDefinition @"
+using System;
+using System.IO;
+using System.Runtime.InteropServices;
+using Microsoft.Win32.SafeHandles;
+public static class InlineRedactorReleaseIdentity {
+    [StructLayout(LayoutKind.Sequential, Pack = 4)]
+    private struct FileInformation {
+        public uint Attributes;
+        public long CreationTime, LastAccessTime, LastWriteTime;
+        public uint VolumeSerial, SizeHigh, SizeLow, NumberOfLinks, IndexHigh, IndexLow;
+    }
+    [DllImport("kernel32.dll", SetLastError = true)]
+    private static extern bool GetFileInformationByHandle(SafeFileHandle handle, out FileInformation info);
+    public static string Read(string path) {
+        using (var file = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete)) {
+            FileInformation info;
+            if (!GetFileInformationByHandle(file.SafeFileHandle, out info))
+                throw new IOException("Cannot inspect release smoke file identity");
+            return info.VolumeSerial.ToString("x8") + info.IndexHigh.ToString("x8") + info.IndexLow.ToString("x8");
+        }
+    }
+}
+"@
+$smokeRoot = Join-Path $resolvedOutput 'in-place-smoke'
+$nestedRoot = Join-Path $smokeRoot 'nested'
+$first = Join-Path $smokeRoot 'first.go'
+$second = Join-Path $nestedRoot 'second.go'
+$null = New-Item -ItemType Directory -Path $nestedRoot
+$encoding = [Text.UTF8Encoding]::new($false)
+try {
+    [IO.File]::WriteAllText($first, $source, $encoding)
+    [IO.File]::WriteAllText($second, $source.Replace('// preserve', '// nested'), $encoding)
+    $identities = @{}
+    foreach ($path in @($first, $second)) { $identities[$path] = [InlineRedactorReleaseIdentity]::Read($path) }
+    foreach ($pass in 1..2) {
+        $result = Invoke-Redactor '' @('--in-place', $smokeRoot)
+        if ($result.Output.Length -ne 0 -or $result.Diagnostics.Length -ne 0) {
+            throw 'Windows in-place smoke test produced unexpected output'
+        }
+        foreach ($path in @($first, $second)) {
+            $wanted = if ($path -eq $first) { $expected } else { $expected.Replace('// preserve', '// nested') }
+            if ([Convert]::ToBase64String([IO.File]::ReadAllBytes($path)) -cne [Convert]::ToBase64String($encoding.GetBytes($wanted))) {
+                throw 'Windows in-place smoke test changed unrelated source or missed a credential'
+            }
+            if ([InlineRedactorReleaseIdentity]::Read($path) -cne $identities[$path]) {
+                throw 'Windows in-place smoke test replaced the original file object'
+            }
+        }
+        if (@(Get-ChildItem -LiteralPath $smokeRoot -Recurse -Filter '.trufflehog-redact-*' -Force).Count -ne 0) {
+            throw 'Windows in-place smoke test left staging files'
+        }
+    }
+} finally {
+    # Explicit files/directories only; no recursive cleanup of computed paths.
+    foreach ($path in @($first, $second, $nestedRoot, $smokeRoot)) {
+        if (Test-Path -LiteralPath $path) { Remove-Item -LiteralPath $path }
+    }
+}
+
 Copy-Item -LiteralPath (Join-Path $sourceRoot 'LICENSE') -Destination (Join-Path $packageRoot 'LICENSE')
 $usage = @"
 TruffleHog inline source redactor for Windows x64
@@ -96,12 +157,14 @@ One stream (cmd.exe preserves stdin/stdout bytes):
   trufflehog-redact.exe < original.go > redacted.go
   if errorlevel 1 exit /b 1
 
-Windows --in-place requires supported NTFS metadata and an already-enabled
-SeSecurityPrivilege so the complete security descriptor, including audit rules,
-can be preserved. This command never enables privileges. Missing access blocks
-replacement. Source-stream mode does not require this privilege. Do not run the
-downstream scanner if redaction fails. An interrupted batch can be partially
-replaced; keep imports private until successful completion.
+Run Windows --in-place as a standard user on a private NTFS import that your
+account can read and write. Administrator access and SeSecurityPrivilege are
+not required. The existing file object and its security descriptor are retained;
+no privileges are enabled. Hard-linked, read-only and locked changed files block
+the batch before writes begin. Controlled failures attempt to restore original
+bytes; abrupt termination or power loss can leave a partially written file or
+batch. Keep a separate original copy if recovery is required. Do not run the
+downstream scanner unless redaction succeeds; keep the import private until then.
 
 ZIP checksum: verify SHA256SUMS from the same GitHub Release before use.
 PowerShell: Get-FileHash .\trufflehog-redact-windows-amd64-$SourceSha.zip -Algorithm SHA256
@@ -114,7 +177,7 @@ https://github.com/cxosmobb/trufflehog-with-inline-redact/blob/$SourceSha/docs/s
 "@
 $encoding = [Text.UTF8Encoding]::new($false)
 [IO.File]::WriteAllText((Join-Path $packageRoot 'README.txt'), $usage + "`n", $encoding)
-$metadata = "Source commit: $SourceSha`nToolchain: $goVersion`nTarget: windows/amd64`nCGO_ENABLED: 0`nSmoke tests: exact source redaction; idempotence; help`n"
+$metadata = "Source commit: $SourceSha`nToolchain: $goVersion`nTarget: windows/amd64`nCGO_ENABLED: 0`nSmoke tests: exact source redaction; idempotence; help; two-file in-place directory; original file identities`n"
 [IO.File]::WriteAllText((Join-Path $packageRoot 'BUILD.txt'), $metadata, $encoding)
 $assetName = "trufflehog-redact-windows-amd64-$SourceSha.zip"
 $assetPath = Join-Path $resolvedOutput $assetName
@@ -126,4 +189,4 @@ Compress-Archive -LiteralPath @(
 ) -DestinationPath $assetPath -CompressionLevel Optimal
 $hash = (Get-FileHash -LiteralPath $assetPath -Algorithm SHA256).Hash.ToLowerInvariant()
 [IO.File]::WriteAllText((Join-Path $resolvedOutput 'SHA256SUMS'), "$hash  $assetName`n", [Text.ASCIIEncoding]::new())
-Write-Output 'Windows x64 release build, exact source redaction, idempotence, and help checks passed.'
+Write-Output 'Windows x64 release build, exact stream and in-place directory redaction, idempotence, file identity, and help checks passed.'
