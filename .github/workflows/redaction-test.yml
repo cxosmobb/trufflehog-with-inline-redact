@@ -60,10 +60,18 @@ jobs:
           git fetch "$RUNNER_TEMP/redaction-sync/redaction-sync.bundle" HEAD
           test "$(git rev-parse FETCH_HEAD)" = "$MERGE_SHA"
           git checkout --detach "$MERGE_SHA"
-      - name: Install Go from the current source tree
+      - name: Select the maintained Go patch series required by upstream
+        id: go-version
+        run: |
+          set -euo pipefail
+          version=$(awk '$1 == "go" { split($2, parts, "."); print parts[1] "." parts[2] ".x"; exit }' go.mod)
+          [[ "$version" =~ ^[0-9]+\.[0-9]+\.x$ ]]
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+      - name: Install the latest patch in upstream's Go series
         uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6
         with:
-          go-version-file: go.mod
+          go-version: ${{ steps.go-version.outputs.version }}
+          check-latest: true
           cache: false
       - name: Build the production pre-scan command before testing
         run: |

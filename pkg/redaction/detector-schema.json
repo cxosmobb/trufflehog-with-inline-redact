@@ -1,6 +1,6 @@
 {
-  "production_files": 956,
-  "result_files": 921,
+  "production_files": 957,
+  "result_files": 922,
   "keys": [
     "access_key_id",
     "access_type",
@@ -93,7 +93,7 @@
     "host": 9,
     "id": 38,
     "ikey": 1,
-    "key": 850,
+    "key": 851,
     "key_name": 1,
     "organization": 3,
     "organization_id": 1,
@@ -890,14 +890,14 @@
     },
     {
       "path": "pkg/detectors/azure_entra/common.go",
-      "sha256": "1f8e912f87c3d005f709bae420f54939ba6c982a7b9e5847923399094224bca6",
+      "sha256": "623b0925c36b3d4acb042d000308861270a5e45bff2eb5a350d65cf22b58dfeb",
       "part_keys": null,
       "from_data": false,
       "delegating": false
     },
     {
       "path": "pkg/detectors/azure_entra/refreshtoken/refreshtoken.go",
-      "sha256": "862133baedb711a5a847e179ca5a2a4e03969e3c84aeb55c81b0687796f50adb",
+      "sha256": "eb2390aa109137494fd63918cff7cf28f7b0157ce8e69d19a59f5a6bc08894e0",
       "part_keys": [
         "key"
       ],
@@ -913,14 +913,14 @@
     },
     {
       "path": "pkg/detectors/azure_entra/serviceprincipal/v1/spv1.go",
-      "sha256": "1aedb99c520a13b7f208daa2b8213e112c0fa3f7a12f95db8ec96d58e11ac0b9",
+      "sha256": "9a0d329c7c992a7b2763790a28bd083202ddc0d798aba1fa59d51015919794b7",
       "part_keys": null,
       "from_data": true,
       "delegating": true
     },
     {
       "path": "pkg/detectors/azure_entra/serviceprincipal/v2/spv2.go",
-      "sha256": "57656e1c93d0fef328ee75bc01dd7dbb07c4400a6dbe33234aa660898e8df28e",
+      "sha256": "20dba9aae997e7415fd638e3efdcf3d9cc1d016352981eff3b20d3b8d1b6154e",
       "part_keys": [
         "key"
       ],
@@ -2410,7 +2410,7 @@
     },
     {
       "path": "pkg/detectors/detectors.go",
-      "sha256": "588357b97ba7656e4062657167a45ffee14e5a2ed4bbc19465c830605fe61ffd",
+      "sha256": "187769c856364f0838a0b1cd4380e7a50784542b8033ac4a5789d6e08259719a",
       "part_keys": null,
       "from_data": false,
       "delegating": false
@@ -4400,6 +4400,15 @@
     {
       "path": "pkg/detectors/kylas/kylas.go",
       "sha256": "055934e78fa3c5668b1ce51253fd7f71bc14c24dc14eb4c0cdfc13bf879a4a7a",
+      "part_keys": [
+        "key"
+      ],
+      "from_data": true,
+      "delegating": false
+    },
+    {
+      "path": "pkg/detectors/lambdacloud/lambdacloud.go",
+      "sha256": "dd753d67b48492de36674b628071b8d42827fbbd8f47658c1eebc72f13eab0be",
       "part_keys": [
         "key"
       ],
@@ -8924,7 +8933,7 @@
     },
     {
       "path": "pkg/engine/defaults/defaults.go",
-      "sha256": "e9f987776f137957916ded7e9a93ee29fcb39497444469d42c49925aeb853f0b",
+      "sha256": "73728be2f7a15e8b9b0ecfeb41cf758bd5c988901f9e019f9547205a23b5d874",
       "part_keys": null,
       "from_data": false,
       "delegating": false

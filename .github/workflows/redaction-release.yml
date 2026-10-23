@@ -1,0 +1,254 @@
+name: Release Windows inline redactor
+
+on:
+  workflow_run:
+    workflows: [Redaction compatibility, Report redaction compatibility, Keep redaction fork compatible with upstream]
+    types: [completed]
+  workflow_dispatch:
+  schedule:
+    - cron: '43 * * * *'
+
+permissions: {}
+
+concurrency:
+  group: redaction-windows-release
+  cancel-in-progress: false
+
+jobs:
+  gate:
+    if: github.repository == 'cxosmobb/trufflehog-with-inline-redact'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      actions: read
+      checks: read
+      contents: read
+      statuses: read
+    outputs:
+      publish: ${{ steps.verify.outputs.publish }}
+      needs_validation: ${{ steps.verify.outputs.needs_validation }}
+      sha: ${{ steps.verify.outputs.sha }}
+      tag: ${{ steps.verify.outputs.tag }}
+    steps:
+      # Resolve and verify trusted metadata without checking out repository code.
+      - name: Require successful validation of the current default-branch revision
+        id: verify
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+          EVENT_NAME: ${{ github.event_name }}
+          DISPATCH_REF: ${{ github.ref }}
+        run: |
+          set -euo pipefail
+          echo 'publish=false' >> "$GITHUB_OUTPUT"
+          if [[ "$EVENT_NAME" == workflow_dispatch ]]; then
+            test "$DISPATCH_REF" = "refs/heads/$DEFAULT_BRANCH"
+          fi
+          sha=$(gh api "repos/$GH_REPO/git/ref/heads/$DEFAULT_BRANCH" --jq .object.sha)
+          [[ "$sha" =~ ^[0-9a-f]{40}$ ]]
+          tag="redact-${sha:0:12}"
+          gh api "repos/$GH_REPO/releases?per_page=100" > "$RUNNER_TEMP/redaction-releases.json"
+          if jq -e --arg tag "$tag" 'any(.[]; .tag_name == $tag and .draft == false)' "$RUNNER_TEMP/redaction-releases.json" >/dev/null; then
+            echo 'The current revision already has a Windows release.' >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+          echo "sha=$sha" >> "$GITHUB_OUTPUT"
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+          workflow_id=$(gh api "repos/$GH_REPO/actions/workflows/redaction-test.yml" --jq .id)
+          gh api "repos/$GH_REPO/actions/workflows/redaction-test.yml/runs?head_sha=$sha&per_page=100" > "$RUNNER_TEMP/redaction-current-runs.json"
+          existing=$(jq --arg branch "$DEFAULT_BRANCH" '[.workflow_runs[] | select(.head_branch == $branch and (.event == "push" or .event == "workflow_dispatch"))] | length' "$RUNNER_TEMP/redaction-current-runs.json")
+          if [[ "$existing" == 0 ]]; then
+            echo 'needs_validation=true' >> "$GITHUB_OUTPUT"
+            echo 'The current revision needs its first complete compatibility run.' >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+          run_id=$(jq -r --arg branch "$DEFAULT_BRANCH" '[.workflow_runs[] | select(.head_branch == $branch and .conclusion == "success" and (.event == "push" or .event == "workflow_dispatch"))] | sort_by(.id) | last.id // empty' "$RUNNER_TEMP/redaction-current-runs.json")
+          if [[ -z "$run_id" ]]; then
+            echo 'The current default-branch revision has no successful compatibility run yet.' >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+          [[ "$run_id" =~ ^[0-9]+$ ]]
+          gh api "repos/$GH_REPO/actions/runs/$run_id" > "$RUNNER_TEMP/redaction-release-run.json"
+          if ! jq -e --arg repo "$GH_REPO" --arg sha "$sha" --arg branch "$DEFAULT_BRANCH" --argjson workflow "$workflow_id" '
+            .repository.full_name == $repo and .head_repository.full_name == $repo and
+            .workflow_id == $workflow and (.path | split("@")[0]) == ".github/workflows/redaction-test.yml" and
+            .head_sha == $sha and .head_branch == $branch and
+            .status == "completed" and .conclusion == "success" and
+            (.event == "push" or .event == "workflow_dispatch")
+          ' "$RUNNER_TEMP/redaction-release-run.json" >/dev/null; then
+            echo 'This completion does not validate the current default-branch revision.' >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+          suite_id=$(jq -r .check_suite_id "$RUNNER_TEMP/redaction-release-run.json")
+          [[ "$suite_id" =~ ^[0-9]+$ ]]
+          gh api "repos/$GH_REPO/check-suites/$suite_id" > "$RUNNER_TEMP/redaction-release-suite.json"
+          jq -e --arg sha "$sha" '.app.id == 15368 and .head_sha == $sha' "$RUNNER_TEMP/redaction-release-suite.json" >/dev/null
+          attempt=$(jq -r .run_attempt "$RUNNER_TEMP/redaction-release-run.json")
+          [[ "$attempt" =~ ^[0-9]+$ ]]
+          gh api --paginate --slurp "repos/$GH_REPO/actions/runs/$run_id/attempts/$attempt/jobs?per_page=100" > "$RUNNER_TEMP/redaction-release-jobs.json"
+          jq -e '
+            [.[].jobs[] | select(.name == "redaction-tests (ubuntu-latest)" or .name == "redaction-tests (windows-latest)")] as $jobs |
+            ($jobs | length) == 2 and ($jobs | map(.name) | unique | length) == 2 and
+            all($jobs[]; .status == "completed" and .conclusion == "success")
+          ' "$RUNNER_TEMP/redaction-release-jobs.json" >/dev/null
+          # The independent status reporter can finish just after workflow_run.
+          state=''
+          for delay in 1 2 3 4 5 6; do
+            state=$(gh api "repos/$GH_REPO/commits/$sha/status" --jq '[.statuses[] | select(.context == "redaction-compatibility")] | max_by(.id) | .state // empty')
+            [[ "$state" == success ]] && break
+            sleep 5
+          done
+          if [[ "$state" != success ]]; then
+            echo 'The required redaction-compatibility status is not successful; release withheld.' >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+          echo "sha=$sha" >> "$GITHUB_OUTPUT"
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+          echo 'publish=true' >> "$GITHUB_OUTPUT"
+
+  request-validation:
+    needs: gate
+    if: needs.gate.outputs.needs_validation == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      actions: write
+      contents: read
+    steps:
+      # A token-created merge may not trigger push CI. Request only its first run;
+      # pending or failed runs are never retried by the hourly release schedule.
+      - name: Request compatibility validation for the unchanged current revision
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+          RELEASE_SHA: ${{ needs.gate.outputs.sha }}
+        run: |
+          set -euo pipefail
+          [[ "$RELEASE_SHA" =~ ^[0-9a-f]{40}$ ]]
+          test "$(gh api "repos/$GH_REPO/git/ref/heads/$DEFAULT_BRANCH" --jq .object.sha)" = "$RELEASE_SHA"
+          gh api "repos/$GH_REPO/actions/workflows/redaction-test.yml/runs?head_sha=$RELEASE_SHA&per_page=100" > "$RUNNER_TEMP/redaction-dispatch-runs.json"
+          existing=$(jq --arg branch "$DEFAULT_BRANCH" '[.workflow_runs[] | select(.head_branch == $branch and (.event == "push" or .event == "workflow_dispatch"))] | length' "$RUNNER_TEMP/redaction-dispatch-runs.json")
+          if [[ "$existing" != 0 ]]; then
+            echo 'Compatibility validation already exists; no duplicate was requested.' >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+          gh api --method POST "repos/$GH_REPO/actions/workflows/redaction-test.yml/dispatches" -f ref="$DEFAULT_BRANCH"
+          echo 'Requested the complete compatibility matrix; release will wait for its result.' >> "$GITHUB_STEP_SUMMARY"
+
+  build:
+    needs: gate
+    if: needs.gate.outputs.publish == 'true'
+    runs-on: windows-latest
+    timeout-minutes: 60
+    permissions:
+      contents: read
+    env:
+      CGO_ENABLED: '0'
+      GOMAXPROCS: '2'
+      GOTOOLCHAIN: local
+    steps:
+      - name: Check out only the validated revision without persistent credentials
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          ref: ${{ needs.gate.outputs.sha }}
+          persist-credentials: false
+      - name: Select the current Go release series
+        id: go
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $module = [IO.File]::ReadAllText((Join-Path $PWD 'go.mod'))
+          if ($module -notmatch '(?m)^go (\d+\.\d+)(?:\.\d+)?\s*$') { throw 'Missing Go version' }
+          "version=$($Matches[1]).x" >> $env:GITHUB_OUTPUT
+      - name: Install the latest Go patch in the source's release series
+        uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6
+        with:
+          go-version: ${{ steps.go.outputs.version }}
+          check-latest: true
+          cache: false
+      - name: Build, test the executable, and package Windows x64
+        shell: pwsh
+        env:
+          RELEASE_SHA: ${{ needs.gate.outputs.sha }}
+        run: ./scripts/redaction-release.ps1 -SourceSha $env:RELEASE_SHA -OutputDirectory (Join-Path $env:RUNNER_TEMP 'redaction-release')
+      - name: Save the verified release assets
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
+        with:
+          name: redaction-windows-${{ needs.gate.outputs.sha }}
+          path: |
+            ${{ runner.temp }}/redaction-release/*.zip
+            ${{ runner.temp }}/redaction-release/SHA256SUMS
+          if-no-files-found: error
+          retention-days: 1
+          compression-level: 0
+
+  publish:
+    needs: [gate, build]
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      actions: read
+      contents: write
+    steps:
+      # This job never checks out source, restores caches, or executes assets/scripts.
+      - name: Download assets from this workflow's read-only build job
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
+        with:
+          name: redaction-windows-${{ needs.gate.outputs.sha }}
+          path: ${{ runner.temp }}/redaction-release
+      - name: Validate the archive and publish the tested revision
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+          RELEASE_SHA: ${{ needs.gate.outputs.sha }}
+          RELEASE_TAG: ${{ needs.gate.outputs.tag }}
+        run: |
+          set -euo pipefail
+          [[ "$RELEASE_SHA" =~ ^[0-9a-f]{40}$ ]]
+          test "$RELEASE_TAG" = "redact-${RELEASE_SHA:0:12}"
+          test "$(gh api "repos/$GH_REPO/git/ref/heads/$DEFAULT_BRANCH" --jq .object.sha)" = "$RELEASE_SHA"
+          python3 - <<'PY'
+          import hashlib, os, pathlib, re, stat, struct, zipfile
+          sha = os.environ['RELEASE_SHA']
+          root = pathlib.Path(os.environ['RUNNER_TEMP']) / 'redaction-release'
+          asset = f'trufflehog-redact-windows-amd64-{sha}.zip'
+          def require(condition, message):
+              if not condition:
+                  raise SystemExit(message)
+          require({p.name for p in root.iterdir()} == {asset, 'SHA256SUMS'}, 'Unexpected release assets')
+          checksum = (root / 'SHA256SUMS').read_text(encoding='ascii')
+          require(re.fullmatch(r'[0-9a-f]{64}  ' + re.escape(asset) + r'\n', checksum) is not None, 'Invalid checksum manifest')
+          with (root / asset).open('rb') as stream:
+              digest = hashlib.file_digest(stream, 'sha256').hexdigest()
+          require(digest == checksum[:64], 'Release checksum mismatch')
+          with zipfile.ZipFile(root / asset) as archive:
+              entries = archive.infolist()
+              require(len(entries) == 4 and {e.filename for e in entries} == {'trufflehog-redact.exe', 'LICENSE', 'README.txt', 'BUILD.txt'}, 'Unexpected ZIP entries')
+              require(all(not e.is_dir() and not stat.S_ISLNK(e.external_attr >> 16) and 0 < e.file_size <= 256 * 1024 * 1024 for e in entries), 'Invalid ZIP entry type or size')
+              require(sum(e.file_size for e in entries) <= 260 * 1024 * 1024, 'ZIP exceeds size limit')
+              require(archive.getinfo('BUILD.txt').file_size <= 4096, 'Oversized build metadata')
+              metadata = archive.read('BUILD.txt').decode('ascii')
+              require(metadata.splitlines()[0] == f'Source commit: {sha}', 'Archive revision mismatch')
+              with archive.open('trufflehog-redact.exe') as stream:
+                  header = stream.read(4096)
+              require(header[:2] == b'MZ' and len(header) >= 64, 'Missing executable header')
+              offset = struct.unpack_from('<I', header, 60)[0]
+              require(offset <= len(header) - 6 and header[offset:offset + 4] == b'PE\0\0' and struct.unpack_from('<H', header, offset + 4)[0] == 0x8664, 'Not a Windows x64 executable')
+              require(archive.testzip() is None, 'Corrupt ZIP entry')
+          PY
+          asset="$RUNNER_TEMP/redaction-release/trufflehog-redact-windows-amd64-$RELEASE_SHA.zip"
+          cat > "$RUNNER_TEMP/redaction-release-notes.md" <<EOF
+          Windows x64 inline source redactor from commit $RELEASE_SHA.
+
+          The exact revision passed the complete Linux and Windows redaction compatibility matrix. The packaged executable also passed exact source-stream redaction and second-pass idempotence on Windows. Download the ZIP and SHA256SUMS, verify its checksum, and read README.txt before use.
+
+          In-place Windows replacement requires an already-enabled SeSecurityPrivilege and supported NTFS security metadata. The command never enables privileges; unavailable access blocks replacement. A passing Windows CI job does not claim privilege-dependent replacement tests executed.
+
+          These builds are unsigned. The upstream TruffleHog version number is not reused for fork releases.
+          EOF
+          gh release create "$RELEASE_TAG" "$asset" "$RUNNER_TEMP/redaction-release/SHA256SUMS" \
+            --target "$RELEASE_SHA" --title "Inline redactor Windows x64 (${RELEASE_SHA:0:12})" \
+            --notes-file "$RUNNER_TEMP/redaction-release-notes.md" --latest

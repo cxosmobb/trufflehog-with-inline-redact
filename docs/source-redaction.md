@@ -41,6 +41,45 @@ ordinary TruffleHog findings retain their original component fields. Detector
 context logs are discarded, and recovered detector/decoder panics withhold
 output without printing their payloads.
 
+## Windows release ZIPs
+
+Download the Windows x64 ZIP and `SHA256SUMS` from this fork's
+[Releases](https://github.com/cxosmobb/trufflehog-with-inline-redact/releases).
+Verify the ZIP's SHA-256 digest against the manifest, then extract it. Each ZIP
+contains `trufflehog-redact.exe`, the license, usage instructions, and the exact
+source commit/toolchain in `BUILD.txt`. Builds are unsigned.
+
+```powershell
+Get-FileHash .\trufflehog-redact-windows-amd64-<commit>.zip -Algorithm SHA256
+.\trufflehog-redact.exe --help
+.\trufflehog-redact.exe --in-place C:\path\to\private-import
+if ($LASTEXITCODE -ne 0) { throw 'Redaction failed; do not run the downstream scanner' }
+```
+
+Windows `--in-place` requires an already-enabled `SeSecurityPrivilege` and a
+filesystem supporting the complete security descriptor. The executable never
+enables privileges; it refuses replacement if the required access is absent.
+Source-stream mode remains available without that privilege. Use `cmd.exe`
+redirection when byte-preserving stdin/stdout is required, and check the command's
+exit status before using the output. Read the in-place operating constraints below.
+
+The release workflow runs on standard free public GitHub-hosted runners. It
+publishes only the current default-branch revision after independently verifying
+a successful Linux/Windows compatibility matrix and its required status. A
+read-only Windows job builds with the latest Go patch in the release series
+required by `go.mod`, runs the actual executable through exact source redaction,
+second-pass idempotence and help checks, then creates the ZIP. An isolated
+publisher validates the archive and checksum without executing repository code
+or the executable. Release tags are `redact-<12-character-source-commit>`.
+
+Hourly checks and compatibility completion events detect newly validated source.
+When a token-created upstream merge has no compatibility run of its own, an
+isolated job requests the first full matrix for that exact current revision.
+Pending or failed runs are not retried automatically; failures withhold releases
+until a maintainer fixes them and reruns compatibility validation. Successful
+Windows source-stream checks do not assert that privilege-dependent in-place
+tests executed.
+
 ## Byte preservation and supported encodings
 
 The redactor uses the detector's individual credential components instead of
@@ -118,21 +157,21 @@ ignores cancellation; use process-level resource limits for hostile imports.
 ## Coverage and updates
 
 The public fork is [cxosmobb/trufflehog-with-inline-redact](https://github.com/cxosmobb/trufflehog-with-inline-redact).
-The current reviewed upstream revision is `e63326d6545de8f425d93ce24078c6e68d83f70e`
-from upstream `main` on 2026-10-19. It adds SonarQube to the original 897-instance
-baseline; all 898 registered scanner instances use the same source-redaction
-policy and mandatory coverage gates.
+The current reviewed upstream revision is `d6ea4a52e3f4705989210e60e9f0da0deafe84bf`
+from upstream `main` on 2026-10-23. SonarQube and LambdaCloud raise the original
+897-instance baseline to 899 registered scanner instances, using the same
+source-redaction policy and mandatory coverage gates.
 
-On 2026-10-19, the compiled Linux command was exercised in WSL on native Linux
-storage: **898/898 scanner samples** passed actual file replacement and a second
-unchanged pass. The full-registry directory batch contained **899 files** and
-passed two command runs. Fifteen additional fixtures matched independently
-specified output bytes, including structured duplicates and supported encodings.
-The engine/security/schema suite and registry-completeness audit also passed.
-Successful Windows full-descriptor replacement remains unverified under the
-local token, which lacks the required audit-security privilege.
+The full-registry directory batch contains **900 files**. The complete Linux
+suite requires actual file replacement and a second unchanged pass for every
+scanner and the production command. Fifteen additional fixtures specify exact
+output bytes independently, including structured duplicates and supported
+encodings. The engine/security/schema suite and registry-completeness audit are
+also required. See the compatibility workflow for results for each commit.
+Successful Windows full-descriptor replacement requires audit-security privilege;
+its absence explicitly skips positive cases and exercises safe refusal instead.
 
-The tested baseline has **898/898 registered scanner instances** with a positive
+The current baseline has **899/899 registered scanner instances** with a positive
 offline redaction fixture, with zero detection or mapping gaps. This includes
 scanner versions and feature-gated implementations, plus the upstream registry's
 known Guru and Tru omissions. A registry-completeness test compares the redaction
