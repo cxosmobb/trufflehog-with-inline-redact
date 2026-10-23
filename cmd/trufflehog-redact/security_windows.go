@@ -10,7 +10,6 @@ import (
 )
 
 const accessSecurityInformation = windows.OWNER_SECURITY_INFORMATION | windows.GROUP_SECURITY_INFORMATION | windows.DACL_SECURITY_INFORMATION | windows.LABEL_SECURITY_INFORMATION
-const sourceSecurityInformation = windows.BACKUP_SECURITY_INFORMATION
 
 type securityMetadata struct {
 	descriptor *windows.SECURITY_DESCRIPTOR
@@ -19,15 +18,11 @@ type securityMetadata struct {
 
 func (s securityMetadata) size() int64 { return int64(len(s.sddl)) }
 
+// Only inspect the metadata readable with ordinary file access. Windows commits
+// change the existing file's data, leaving its complete security descriptor,
+// including the privileged audit SACL, attached to the same object throughout.
 func captureSecurity(file *os.File) (securityMetadata, error) {
-	// Auditing policy cannot be inferred from the DACL. Refuse replacement if
-	// the complete descriptor (including SACL) cannot be read and restored.
-	handle, err := securityHandle(file, windows.READ_CONTROL|windows.ACCESS_SYSTEM_SECURITY)
-	if err != nil {
-		return securityMetadata{}, errors.New("cannot inspect complete source security metadata; Windows in-place requires enabled SeSecurityPrivilege")
-	}
-	defer handle.Close()
-	return captureDescriptor(handle, sourceSecurityInformation)
+	return captureDescriptor(file, accessSecurityInformation)
 }
 
 func captureDescriptor(file *os.File, information windows.SECURITY_INFORMATION) (securityMetadata, error) {
@@ -100,46 +95,6 @@ func daclString(descriptor *windows.SECURITY_DESCRIPTOR) (string, error) {
 		return "", errors.New("cannot inspect protected staging ACL")
 	}
 	return actual.String(), nil
-}
-
-func applySecurity(file *os.File, expected securityMetadata) error {
-	if expected.descriptor == nil {
-		return errors.New("missing source security metadata")
-	}
-	owner, _, ownerErr := expected.descriptor.Owner()
-	group, _, groupErr := expected.descriptor.Group()
-	dacl, _, daclErr := expected.descriptor.DACL()
-	control, _, controlErr := expected.descriptor.Control()
-	if ownerErr != nil || groupErr != nil || daclErr != nil || controlErr != nil {
-		return errors.New("cannot preserve source security metadata")
-	}
-	// BACKUP requests the complete descriptor; explicit flags also identify
-	// each pointer consumed by SetSecurityInfo, including every SACL section.
-	// https://learn.microsoft.com/en-us/windows/win32/api/aclapi/nf-aclapi-setsecurityinfo
-	info := windows.SECURITY_INFORMATION(sourceSecurityInformation | windows.OWNER_SECURITY_INFORMATION | windows.GROUP_SECURITY_INFORMATION | windows.DACL_SECURITY_INFORMATION | windows.SACL_SECURITY_INFORMATION | windows.LABEL_SECURITY_INFORMATION | windows.ATTRIBUTE_SECURITY_INFORMATION | windows.SCOPE_SECURITY_INFORMATION)
-	if control&windows.SE_DACL_PROTECTED != 0 {
-		info |= windows.PROTECTED_DACL_SECURITY_INFORMATION
-	} else {
-		info |= windows.UNPROTECTED_DACL_SECURITY_INFORMATION
-	}
-	if control&windows.SE_SACL_PROTECTED != 0 {
-		info |= windows.PROTECTED_SACL_SECURITY_INFORMATION
-	} else {
-		info |= windows.UNPROTECTED_SACL_SECURITY_INFORMATION
-	}
-	sacl, _, saclErr := expected.descriptor.SACL()
-	if saclErr != nil && !errors.Is(saclErr, windows.ERROR_OBJECT_NOT_FOUND) {
-		return errors.New("cannot preserve source security metadata")
-	}
-	handle, err := securityHandle(file, windows.READ_CONTROL|windows.WRITE_DAC|windows.WRITE_OWNER|windows.ACCESS_SYSTEM_SECURITY)
-	if err != nil {
-		return err
-	}
-	defer handle.Close()
-	if windows.SetSecurityInfo(windows.Handle(handle.Fd()), windows.SE_FILE_OBJECT, info, owner, group, dacl, sacl) != nil || !sameSecurity(file, expected) {
-		return errors.New("cannot preserve source security metadata")
-	}
-	return nil
 }
 
 // Open a metadata handle without following a substituted final symlink. Check

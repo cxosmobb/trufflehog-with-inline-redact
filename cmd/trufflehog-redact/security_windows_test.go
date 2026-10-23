@@ -34,105 +34,102 @@ func TestWindowsStageACLIsPrivateBeforeWriting(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	dacl, _, err := metadata.descriptor.DACL()
-	if err != nil {
-		t.Fatal(err)
-	}
-	actual, err := windows.NewSecurityDescriptor()
-	if err != nil || actual.SetDACL(dacl, true, false) != nil || actual.SetControl(windows.SE_DACL_PROTECTED, windows.SE_DACL_PROTECTED) != nil {
-		t.Fatal("cannot inspect staged DACL")
-	}
-	if actual.String() != expected.String() {
-		t.Fatalf("staging inherited a broader ACL than owner and LocalSystem: %s / %s", actual.String(), expected.String())
+	actual, err := daclString(metadata.descriptor)
+	if err != nil || actual != expected.String() {
+		t.Fatal("staging inherited a broader ACL than owner and LocalSystem")
 	}
 }
 
-func TestWindowsSourceACLAndOwnerSurviveReplacement(t *testing.T) {
+func TestWindowsSourceIdentitySecurityAndStreamsSurviveRedaction(t *testing.T) {
 	dir := t.TempDir()
-	source, err := os.OpenFile(filepath.Join(dir, "source"), os.O_RDWR|os.O_CREATE|os.O_EXCL, 0600)
+	path := writeSource(t, dir, "source.go", "prefix SYNTHETIC_SECRET suffix", 0600)
+	// An alternate stream and a protected source ACL belong to the original
+	// file object. Editing its unnamed stream must preserve both unchanged.
+	stream := path + ":retained-metadata"
+	const metadata = "ordinary retained metadata"
+	if err := os.WriteFile(stream, []byte(metadata), 0600); err != nil {
+		t.Fatal(err)
+	}
+	source, err := os.Open(path)
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer source.Close()
 	if err := privateStaging(source); err != nil {
 		t.Fatal(err)
 	}
 	expected, err := captureSecurity(source)
 	if err != nil {
-		t.Skip("complete security descriptor requires enabled SeSecurityPrivilege")
+		t.Fatal(err)
+	}
+	before, err := source.Stat()
+	if err != nil {
+		t.Fatal(err)
 	}
 	if err := source.Close(); err != nil {
 		t.Fatal(err)
 	}
-	stage, err := os.OpenFile(filepath.Join(dir, "stage"), os.O_RDWR|os.O_CREATE|os.O_EXCL, 0600)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer stage.Close()
-	if err := privateStaging(stage); err != nil {
-		t.Fatal(err)
-	}
-	if err := applySecurity(stage, expected); err != nil {
-		t.Fatal(err)
-	}
-	if err := stage.Close(); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.Rename(filepath.Join(dir, "stage"), filepath.Join(dir, "source")); err != nil {
-		t.Fatal(err)
-	}
-	replaced, err := os.Open(filepath.Join(dir, "source"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer replaced.Close()
-	if !sameSecurity(replaced, expected) {
-		t.Fatal("source security metadata was widened or ownership changed")
+	scanner := sourceScannerFunc(replaceSyntheticSecret)
+	for pass := 1; pass <= 2; pass++ {
+		if err := redactFiles(context.Background(), scanner, []string{path}, 1024, 2048); err != nil {
+			t.Fatal(err)
+		}
+		assertSource(t, path, "prefix REDACTED suffix")
+		assertSource(t, stream, metadata)
+		source, err := os.Open(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		after, statErr := source.Stat()
+		same := sameSecurity(source, expected)
+		_ = source.Close()
+		if statErr != nil || !os.SameFile(before, after) || !same {
+			t.Fatal("redaction replaced the source object or changed source security metadata")
+		}
+		assertNoStagedFiles(t, dir)
 	}
 }
 
-func TestWindowsMissingAuditPrivilegeWithholdsOriginalSource(t *testing.T) {
+func TestWindowsRejectsSourceACLChangesDuringScanning(t *testing.T) {
 	dir := t.TempDir()
-	path := filepath.Join(dir, "source.go")
-	content := "prefix SYNTHETIC_SECRET suffix"
-	if err := os.WriteFile(path, []byte(content), 0600); err != nil {
-		t.Fatal(err)
-	}
-	file, err := os.Open(path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	_, metadataErr := captureSecurity(file)
-	_ = file.Close()
-	if metadataErr == nil {
-		t.Skip("current token has enabled audit privilege")
-	}
+	first := writeSource(t, dir, "first.go", "SYNTHETIC_SECRET first", 0600)
+	second := writeSource(t, dir, "second.go", "SYNTHETIC_SECRET second", 0600)
 	calls := 0
 	scanner := sourceScannerFunc(func(ctx context.Context, input []byte) ([]byte, redaction.Report, error) {
 		calls++
+		if calls == 2 {
+			source, err := os.Open(first)
+			if err != nil {
+				t.Fatal(err)
+			}
+			err = privateStaging(source)
+			_ = source.Close()
+			if err != nil {
+				t.Fatal(err)
+			}
+		}
 		return replaceSyntheticSecret(ctx, input)
 	})
-	if err := redactFiles(context.Background(), scanner, []string{path}, 1024, 2048); err == nil {
-		t.Fatal("source replacement accepted without complete audit metadata")
+	if err := redactFiles(context.Background(), scanner, []string{first, second}, 1024, 2048); err == nil {
+		t.Fatal("accepted a source ACL change during scanning")
 	}
-	if calls != 0 {
-		t.Fatal("scanner ran after complete security metadata could not be captured")
-	}
-	assertSource(t, path, content)
+	assertSource(t, first, "SYNTHETIC_SECRET first")
+	assertSource(t, second, "SYNTHETIC_SECRET second")
 	assertNoStagedFiles(t, dir)
 }
 
-func TestWindowsExplicitAuditSACLSurvivesReplacement(t *testing.T) {
+// Creating an explicit audit policy requires a privileged test fixture, but the
+// redaction itself does not. Ordinary-user coverage below never skips.
+func TestWindowsExplicitAuditSACLSurvivesRedaction(t *testing.T) {
 	dir := t.TempDir()
-	path := filepath.Join(dir, "source")
-	source, err := os.OpenFile(path, os.O_RDWR|os.O_CREATE|os.O_EXCL, 0600)
+	path := writeSource(t, dir, "source.go", "prefix SYNTHETIC_SECRET suffix", 0600)
+	source, err := os.Open(path)
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer source.Close()
 	audit, err := securityHandle(source, windows.READ_CONTROL|windows.ACCESS_SYSTEM_SECURITY)
+	_ = source.Close()
 	if err != nil {
-		t.Skip("explicit audit SACL test requires enabled SeSecurityPrivilege")
+		t.Skip("creating an explicit audit fixture requires an existing enabled audit privilege")
 	}
 	defer audit.Close()
 	policy, err := windows.SecurityDescriptorFromString("S:P(AU;SAFA;FR;;;WD)")
@@ -146,82 +143,25 @@ func TestWindowsExplicitAuditSACLSurvivesReplacement(t *testing.T) {
 	if err := windows.SetSecurityInfo(windows.Handle(audit.Fd()), windows.SE_FILE_OBJECT, windows.SACL_SECURITY_INFORMATION|windows.PROTECTED_SACL_SECURITY_INFORMATION, nil, nil, nil, sacl); err != nil {
 		t.Fatal("cannot create explicit audit SACL fixture")
 	}
-	expected, err := captureSecurity(source)
+	expected, err := captureDescriptor(audit, windows.BACKUP_SECURITY_INFORMATION)
 	if err != nil {
 		t.Fatal(err)
 	}
-	stage, err := os.OpenFile(filepath.Join(dir, "stage"), os.O_RDWR|os.O_CREATE|os.O_EXCL, 0600)
+	before, err := audit.Stat()
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer stage.Close()
-	if err := privateStaging(stage); err != nil {
+	if err := redactFiles(context.Background(), sourceScannerFunc(replaceSyntheticSecret), []string{path}, 1024, 2048); err != nil {
 		t.Fatal(err)
 	}
-	if err := applySecurity(stage, expected); err != nil {
-		t.Fatal(err)
+	assertSource(t, path, "prefix REDACTED suffix")
+	current, err := captureDescriptor(audit, windows.BACKUP_SECURITY_INFORMATION)
+	if err != nil || current.sddl != expected.sddl {
+		t.Fatal("explicit audit SACL changed")
 	}
-	if err := stage.Close(); err != nil {
-		t.Fatal(err)
+	after, err := os.Stat(path)
+	if err != nil || !os.SameFile(before, after) {
+		t.Fatal("audited source object was replaced")
 	}
-	_ = audit.Close()
-	_ = source.Close()
-	if err := os.Rename(filepath.Join(dir, "stage"), path); err != nil {
-		t.Fatal(err)
-	}
-	replaced, err := os.Open(path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer replaced.Close()
-	if !sameSecurity(replaced, expected) {
-		t.Fatal("complete security descriptor or explicit audit SACL was lost")
-	}
-}
-
-func TestWindowsRootRenameMetadata(t *testing.T) {
-	dir := t.TempDir()
-	root, err := os.OpenRoot(dir)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer root.Close()
-	if err := root.WriteFile("source", []byte("original"), 0600); err != nil {
-		t.Fatal(err)
-	}
-	file, err := root.OpenFile("stage", os.O_RDWR|os.O_CREATE|os.O_EXCL, 0600)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := privateStaging(file); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := file.Write([]byte("replacement")); err != nil || file.Sync() != nil || file.Close() != nil {
-		t.Fatal("cannot finish stage")
-	}
-	file, err = root.OpenFile("stage", os.O_RDWR, 0)
-	if err != nil {
-		t.Fatal(err)
-	}
-	before, err := file.Stat()
-	if err != nil {
-		t.Fatal(err)
-	}
-	if file.Chmod(0600) != nil || file.Sync() != nil || file.Close() != nil {
-		t.Fatal("cannot finish permissions")
-	}
-	expected, err := root.Stat("stage")
-	if err != nil || !os.SameFile(before, expected) {
-		t.Fatal("stage identity changed on close")
-	}
-	if err := root.Rename("stage", "source"); err != nil {
-		t.Fatal(err)
-	}
-	current, err := root.Stat("source")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !os.SameFile(expected, current) || expected.Mode() != current.Mode() || expected.Size() != current.Size() || !expected.ModTime().Equal(current.ModTime()) {
-		t.Fatalf("rename changed metadata: identity=%v modes=%v/%v sizes=%d/%d times=%v/%v", os.SameFile(expected, current), expected.Mode(), current.Mode(), expected.Size(), current.Size(), expected.ModTime(), current.ModTime())
-	}
+	assertNoStagedFiles(t, dir)
 }
