@@ -80,11 +80,9 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer) error {
 		}
 		return nil
 	}
-	paths, err := sourceFilesLimited(ctx, flags.Args(), *maxFiles)
-	if err != nil {
-		return err
-	}
-	return redactFiles(ctx, scanner, paths, *maxBytes, *maxTotal)
+	return RedactInPlace(ctx, scanner, flags.Args(), Options{
+		MaxBytes: *maxBytes, MaxTotalBytes: *maxTotal, MaxFiles: *maxFiles,
+	})
 }
 
 func readLimited(reader io.Reader, limit int64) ([]byte, error) {
@@ -342,7 +340,7 @@ func redactFilesWithOptions(ctx context.Context, scanner Scanner, paths []string
 			return err
 		}
 		pending := stagedFile{path: rel, original: data, redacted: output, mode: info.Mode(), originalInfo: info, security: security}
-		if beforeCommit == nil && !bytes.Equal(data, output) {
+		if stageSourceFiles && beforeCommit == nil && !bytes.Equal(data, output) {
 			pending.temp, pending.stagedInfo, err = stageBytes(root, rel, output)
 			if err != nil {
 				return err
@@ -367,7 +365,7 @@ func redactFilesWithOptions(ctx context.Context, scanner Scanner, paths []string
 				return err
 			}
 			file := &staged[i]
-			if bytes.Equal(file.original, file.redacted) {
+			if !stageSourceFiles || bytes.Equal(file.original, file.redacted) {
 				continue
 			}
 			file.temp, file.stagedInfo, err = stageBytes(root, file.path, file.redacted)

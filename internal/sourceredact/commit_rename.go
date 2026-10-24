@@ -8,6 +8,10 @@ import (
 	"os"
 )
 
+const stageSourceFiles = true
+
+func recoverSourceInputs(context.Context, []string, Options) error { return nil }
+
 func commitFiles(ctx context.Context, root *os.Root, staged []stagedFile) error {
 	for i, file := range staged {
 		if err := ctx.Err(); err != nil {

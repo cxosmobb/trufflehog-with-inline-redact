@@ -29,7 +29,7 @@ cmp pkg/redaction/detector-schema.json /tmp/redaction-detector-schema.json
 
 The explicit `REDACTION_REQUIRE_IN_PLACE=1` command requires supported Linux storage or a private Windows NTFS tree with ordinary read/write access. Windows must pass without enabling `SeSecurityPrivilege` or running as Administrator. It fails when successful in-place edits cannot be exercised; a skipped platform test is not evidence that in-place redaction works.
 
-The detector inventory and behavioral tests serve different purposes. Tests in `pkg/redaction` compare the reviewed inventory with current production detector code and require policies for known secret-component keys. `scripts/redaction-audit.go` prints the current inventory for review; it does not approve or update the policy. Behavioral tests check that secret components become `REDACTED` and that unrelated identifiers, punctuation, whitespace, and surrounding source remain intact. The separate in-place corpus exercises real detector fixtures through source-file staging and replacement, and command fixtures run the executable against nested multi-file trees. An inventory count, a populated `SecretParts` map, or a passing source-stream test alone does not prove correct in-place redaction.
+The detector inventory and behavioral tests serve different purposes. Tests in `pkg/redaction` compare the reviewed inventory with current production detector code and require policies for known secret-component keys. `scripts/redaction-audit.go` prints the current inventory for review; it does not approve or update the policy. Behavioral tests check that secret components become `REDACTED` and that unrelated identifiers, punctuation, whitespace, and surrounding source remain intact. The separate in-place corpus exercises real detector fixtures through the platform commit mechanism, and command fixtures run the executable against nested multi-file trees. An inventory count, a populated `SecretParts` map, or a passing source-stream test alone does not prove correct in-place redaction.
 
 `.github/workflows/redaction-test.yml` builds full TruffleHog and the compatibility wrapper first. It supplies `REDACTION_TEST_MAIN_BINARY` for native CLI and in-place corpus tests and `REDACTION_TEST_BINARY` for compatibility stream checks, then runs the complete redaction suite on standard public Linux and Windows hosted runners. It clears the local detector filter and requires actual successful in-place edits on Linux and Windows. Windows must exercise the complete corpus with ordinary file permissions; its locked same-file writes retain original identity and security metadata without privileged descriptor copying. Both platforms test the inventory generator and compare its result with the reviewed snapshot. No detector policy or inventory is automatically accepted. Native CLI regressions also require original source commands and flags in help, ordinary offline JSON findings without file changes, original-secret findings plus local filesystem redaction, no second-pass findings, reporting filters which do not suppress editing, and rejection of unsupported write targets. Test newly added upstream flags with redaction when they can affect scope or security.
 
@@ -39,6 +39,60 @@ Require the **`redaction-compatibility` commit status** from the GitHub Actions 
 
 Upstream's existing detector and source integration workflows often depend on Truffle Security's infrastructure or explicitly exclude forks. Keep the redaction compatibility check independent of those jobs. Run any applicable upstream community tests as an additional check when detector APIs or shared dependencies change; passing provider verification tests does not replace source-editing tests.
 
+## Windows recovery maintenance
+
+Retain the same-file Windows backend: source identity and the full security
+descriptor stay attached to the original object, and no audit privilege or
+Administrator session is needed. Windows uses no visible sidecar stages. Its
+reserved ADS names are `:trufflehog-redact-recovery-v1` and
+`:trufflehog-redact-recovery-ready-v1`; original and target bytes in the payload
+are authenticated and encrypted with user-scoped DPAPI. Do not use machine-wide
+DPAPI protection or change source ACLs to make recovery pass.
+
+Preserve the durability order: flush the encrypted payload, flush the ready
+marker, flush the source object, then mutate source bytes. Verify and flush every
+completed source before journal cleanup. Delete and flush the ready marker
+before deleting and flushing its payload. Controlled rollback must successfully
+flush every restored original before removing any journal; equal cached bytes
+after a failed flush are insufficient. Unreadable or invalid records stay in
+place and fail the command. An interrupted recovery restores the authenticated
+original before detection, then the normal redaction pass runs again. A durably
+disarmed payload can be removed without undoing a completed target.
+
+Recovery precedes detector execution and path filters, and inspects the explicit
+input scope even when current filters exclude a torn file. Preserve unfiltered
+file/directory count bounds, configured current-source limits, the 32 MiB
+per-version record cap, ciphertext checks before allocation/DPAPI, and the
+aggregate journal budget. Treat format changes as compatibility changes: do not
+silently overwrite an existing reserved stream, skip an unknown record, or drop
+validation of source/parent identity, canonical path, security and allowed torn
+contents.
+
+Run the Windows crash regressions together with the full corpus:
+
+```powershell
+go test -p 2 -count=1 -timeout=30m ./internal/sourceredact -run '^TestWindows(ProcessKill|Interrupted|Recovery|ActiveTransaction|FailedRollbackFlush|NativeCommandRecovers)'
+```
+
+Use the mandatory compatibility run's `REDACTION_TEST_MAIN_BINARY` and
+`REDACTION_REQUIRE_IN_PLACE` settings so native-command coverage cannot skip.
+
+The subprocess tests kill real processes after a flushed partial second-file
+write, after completed source writes, during undo and after durable disarming.
+They require automatic recovery before scanning/filtering, exact final bytes,
+retained identity/security and unrelated ADS, no residual journals, and refusal
+of corrupt/replayed records or modified sources. The failed-rollback-flush
+regression requires every journal to survive a failed source flush. These tests
+also run inside the restricted-token child with administrative groups disabled
+and only ordinary traversal privilege retained. Do not replace them with a
+returned-error simulation, enable privileges to pass, or describe them as actual
+power-failure tests.
+
+Recovery requires the original local NTFS objects, the same Windows user's DPAPI
+keys and storage that honors flushes. Rerun the same paths and keep the import
+private until exit zero. Multi-file completion is recoverable, not an atomic
+whole-directory transaction; cleanup interrupted after some files disarm can
+leave a mixture of originals and completed targets for the next run to finish.
 ## Reviewing detector changes
 
 For every new or changed detector, review the actual `FromData` results and component construction before updating the accepted inventory. Determine which values are sensitive and which values identify accounts, users, endpoints, or providers. `Raw`, `RawV2`, and display-oriented `Redacted` values are not a safe substitute for this review: they can contain identifiers, reconstructed combinations, or surrounding context.
@@ -107,6 +161,7 @@ still work without changing source, then run `trufflehog filesystem --in-place`
 against a nested
 two-file NTFS directory, compare exact bytes, verify unchanged file identities
 and repeat the operation unchanged. They must never enable privileges to obtain
-a pass. Keep tests for hard-link, read-only, lock and partial-write rollback
-failures when changing Windows file commits; same-file writes remain vulnerable
-to abrupt termination, so do not describe them as crash-atomic.
+a pass. Keep hard-link, read-only, lock, controlled rollback and real
+process-termination recovery regressions when changing Windows file commits.
+The journal provides recovery on retry; neither a source write nor a whole
+batch becomes an atomic filesystem transaction.

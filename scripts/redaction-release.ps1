@@ -164,6 +164,12 @@ try {
             if ([InlineRedactorReleaseIdentity]::Read($path) -cne $identities[$path]) {
                 throw 'Native Windows in-place smoke test replaced the original file object'
             }
+            $recoveryStreams = @(Get-Item -LiteralPath $path -Stream '*' | Where-Object {
+                $_.Stream -in @('trufflehog-redact-recovery-v1', 'trufflehog-redact-recovery-ready-v1')
+            })
+            if ($recoveryStreams.Count -ne 0) {
+                throw 'Native Windows in-place smoke test retained recovery records after success'
+            }
         }
         if (@(Get-ChildItem -LiteralPath $smokeRoot -Recurse -Filter '.trufflehog-redact-*' -Force).Count -ne 0) {
             throw 'Native Windows in-place smoke test left staging files'
@@ -208,11 +214,15 @@ buffered stream redaction (cmd.exe preserves stdin/stdout bytes):
 Run Windows --in-place as a standard user on a private NTFS import that your
 account can read and write. Administrator access and SeSecurityPrivilege are
 not required. The existing file object and its security descriptor are retained;
-no privileges are enabled. Hard-linked, read-only and locked changed files block
-the batch before writes begin. Controlled failures attempt to restore original
-bytes; abrupt termination or power loss can leave a partially written file or
-batch. Keep a separate original copy if recovery is required. Do not run the
-downstream scanner unless redaction succeeds; keep the import private until then.
+no privileges are enabled. Before changing source bytes, the command flushes
+user-scoped DPAPI-encrypted undo records in reserved NTFS alternate streams.
+After interruption, rerun --in-place with the same input paths and Windows user.
+Recovery restores interrupted originals before scanning, then redaction retries.
+It runs before include/exclude filters. Invalid or substituted recovery records
+stop processing and are retained. Do not delete them, edit/move the affected
+files, or run a downstream scanner until redaction succeeds. Records are removed
+only after durable source verification. Recovery assumes local NTFS and storage
+that honors flushes; a multi-file batch is not an atomic filesystem transaction.
 
 ZIP checksum: verify SHA256SUMS from the same GitHub Release before use.
 PowerShell: Get-FileHash .\trufflehog-redact-windows-amd64-$SourceSha.zip -Algorithm SHA256

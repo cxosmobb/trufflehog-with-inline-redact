@@ -105,9 +105,13 @@ import that your account can read and write. Administrator access and
 `SeSecurityPrivilege` are not required. The command rewrites the existing file
 object, preserving its ownership and security descriptor without reading audit
 rules or changing privileges. Read-only, hard-linked or locked changed files
-block the batch before writes begin. Use `cmd.exe` redirection when
-byte-preserving stdin/stdout is required, and check the command's exit status
-before using the output. Read the in-place operating constraints below.
+block the batch before writes begin. Interrupted writes are recovered automatically
+when the same Windows account reruns the command on the same files. Recovery
+needs the original NTFS files and that account's Windows data-protection keys;
+do not delete the recovery streams or move the import before recovery succeeds.
+Use `cmd.exe` redirection when byte-preserving stdin/stdout is required, and check
+the command's exit status before using the output. Read the operating constraints
+below.
 
 The release workflow runs on standard free public GitHub-hosted runners. It
 publishes only the current default-branch revision after independently verifying
@@ -171,34 +175,54 @@ this command does not rewrite repository history. Symlinks, special files, and
 unreadable files are rejected. Use an exclusively owned, private imported tree
 and exclude concurrent writers until the downstream scanner has finished.
 
-Every input is scanned and every changed file staged beside its original before
-the first original is edited. Source identity, contents, security metadata,
-and staged contents are rechecked before commit and after writing. Filesystem
-operations use a pinned root. Temporary files are private before writing source
-bytes; Windows staging uses a protected ACL rather than relying on mode bits.
-A commit error attempts rollback, including the currently written file; the
-command fails if rollback is incomplete.
+Every selected input is scanned before the first original is edited. Source
+identity, contents and readable security metadata are checked before commit and
+after writing. Filesystem operations use a pinned root. Controlled write errors
+attempt rollback, including the currently written file; incomplete rollback
+fails the command and withholds the import.
 
-On Linux, each replacement is an atomic rename. This changes file identity and
-breaks hard-link aliases to the replaced inode; ownership and supported extended
-attributes are copied onto the replacement. On Windows, all changed originals
-are opened for writing with concurrent write/delete sharing denied before the
-first edit. Hard-linked, read-only, substituted and unavailable files are
-rejected. The command writes and truncates each original through its retained
-handle, flushes it and verifies the exact contents. File identity and the
-original owner/group/DACL/SACL remain intact because the original object and
-its security descriptor are never replaced. Ordinary read/write permissions
-are sufficient; no elevated privilege or token change is used.
+On Linux, private staged files are created beside their originals before editing.
+Each replacement is an atomic rename, which changes file identity and breaks
+hard-link aliases to the replaced inode. Ownership and supported extended
+attributes are copied onto the replacement, and staged bytes are rechecked.
 
-A directory batch is **not** a filesystem transaction. Windows same-file writes
-are also **not** individually crash-atomic: abrupt termination or power loss can
-leave a partially written file. Controlled errors attempt to restore the original
-bytes through the retained handles. Keep the import private, keep a separate
-original copy if recovery is required, and start the downstream scanner only
-after successful completion. Other operating systems currently support stdin
-mode only. Modification timestamps and all filesystem-specific properties are
-not guaranteed to survive editing.
+On Windows, all changed originals are locked against concurrent writes and
+file deletion before the first edit. Hard-linked, read-only, substituted and
+unavailable files are rejected. The command writes and truncates each original
+through its retained handle, flushes it and verifies the exact contents. File
+identity and the original owner/group/DACL/SACL remain intact because the file
+object and security descriptor are never replaced. Ordinary read/write
+permissions are sufficient; no elevated privilege or token change is used.
+Windows creates no visible sidecar staging files.
 
+Before writing source bytes, Windows saves an authenticated undo record containing
+the original and intended redacted contents in a reserved alternate data stream
+(ADS) on that same file. Windows DPAPI encrypts this record for the current user.
+The encrypted record and a separate ready marker are flushed before source
+mutation. Successful commits durably disarm each record before removing its
+payload. An original source is never stored unencrypted in a recovery stream.
+
+After an interruption, rerun the same command with the same paths and Windows
+account. Recovery runs before detection and before include/exclude path filters:
+a torn write may have removed the text a detector would otherwise recognize.
+An armed record restores its authenticated original bytes, flushes and verifies
+them, then ordinary scanning and redaction run again. A record already durably
+disarmed only needs cleanup; its completed source contents stay in place.
+Recovery itself can be interrupted and retried. Invalid, corrupted, substituted
+or inaccessible records fail closed and remain available for investigation.
+The command does not guess a repair or discard a failed recovery record.
+
+Use an exclusively owned local NTFS import on storage that honors Windows flush
+requests. The recovery record is bound to the original file, parent directory,
+canonical path and security metadata, so copies or moved imports are not recovery
+substitutes. A directory batch is **not** an atomic filesystem transaction:
+files can temporarily have mixed contents after termination and until recovery
+completes. Keep the import private and start the downstream scanner only after
+exit status zero. Real subprocess-termination tests exercise interrupted writes
+and recovery; they do not simulate physical power loss or faulty storage.
+Other operating systems currently support stdin mode only. Modification
+timestamps and all filesystem-specific properties are not guaranteed to survive
+editing.
 Only file contents are scanned. Filenames, Git metadata, extended attributes,
 alternate data streams, and other filesystem metadata can contain secrets and
 are outside the redaction guarantee. Limit downstream access to the processed
@@ -211,7 +235,14 @@ individual detector calls can block until they return. Full TruffleHog exposes
 `--redaction-max-bytes`, `--redaction-max-total-bytes`, `--redaction-max-files`
 and `--redaction-timeout`; the file limit also controls directory count.
 The compatibility wrapper retains `--max-bytes`, `--max-total-bytes`,
-`--max-files` and `--timeout`.
+`--max-files` and `--timeout`. Windows recovery enumerates the explicit input
+scope without path filters, so its file/directory counts include excluded files.
+Configured per-file and total limits bound the current recovered source files;
+original versions in pending records also face the configured per-file bound.
+Recovery records separately cap each original/redacted version at 32 MiB, check
+ciphertext size before allocation or decryption, and enforce an aggregate
+encrypted-journal budget of 16 times the total input limit plus 16 MiB. Increasing
+CLI limits does not remove the fixed 32 MiB source/view limits.
 Limit overruns fail rather than skipping files. Fixed library budgets additionally
 cap decoded views (32 MiB each, 128 MiB total), provenance, findings, source edits,
 residual-match patterns, and detector work. Increasing CLI limits does not disable
@@ -279,9 +310,12 @@ go test -p 2 -count=1 ./pkg/redaction/... ./internal/sourceredact/... ./cmd/truf
 The corpus tests invoke actual compiled detector instances with verification
 disabled. Positive fixtures are synthesized from detector patterns and upstream
 test literals; missing detection or source-mapping coverage fails the test.
-In-place tests write fixtures into a nested multi-file tree, exercise staging and
-replacement, check the resulting bytes and a second unchanged pass, and check
-that no staging files remain. Corpus file bytes are compared with the validated engine output; separate command fixtures independently specify exact expected
+In-place tests write fixtures into a nested multi-file tree, exercise the platform
+commit mechanism, check the resulting bytes and a second unchanged pass, and
+check that no staging files or recovery records remain. Windows tests terminate
+real child processes after durable partial writes, during recovery and during
+journal cleanup, then require exact recovery and successful re-redaction without
+privileges. Corpus file bytes are compared with the validated engine output; separate command fixtures independently specify exact expected
 output for plaintext, repeated and structured values, escaped and encoded
 credentials, CRLF, UTF-16, empty files, and benign source.
 

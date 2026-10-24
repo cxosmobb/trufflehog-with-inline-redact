@@ -105,6 +105,18 @@ func TestWindowsRestrictedTokenProcess(t *testing.T) {
 		{"hard-link", TestWindowsHardLinkWithholdsEntireBatch},
 		{"partial-write-rollback", TestWindowsPartialWriteRollsBackCurrentAndPriorSources},
 		{"cancel-after-write", TestWindowsCancellationAfterWriteRollsBack},
+		{"process-kill-recovery", TestWindowsProcessKillDuringWriteRecoversBatch},
+		{"interrupted-recovery", TestWindowsInterruptedRecoveryCanResume},
+		{"interrupted-journal-cleanup", TestWindowsInterruptedJournalCleanupKeepsCompletedTarget},
+		{"active-transaction", TestWindowsActiveTransactionCannotBeRecovered},
+		{"journal-corruption", TestWindowsRecoveryRejectsJournalCorruption},
+		{"journal-source-replay", TestWindowsRecoveryRejectsReplacedSource},
+		{"recovery-policy-change", TestWindowsRecoveryRejectsSourcePolicyChange},
+		{"recovery-before-filters", TestWindowsRecoveryPrecedesSelectionFilters},
+		{"recovery-content-change", TestWindowsRecoveryRejectsModifiedSourceContents},
+		{"recovery-hard-link", TestWindowsRecoveryRejectsNewHardLink},
+		{"rollback-flush-failure", TestWindowsFailedRollbackFlushRetainsEveryJournal},
+		{"native-crash-recovery", TestWindowsNativeCommandRecoversInterruptedWrite},
 	} {
 		t.Run(test.name, test.run)
 	}

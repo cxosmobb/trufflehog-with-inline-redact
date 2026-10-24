@@ -40,6 +40,9 @@ func RedactInPlace(ctx context.Context, scanner Scanner, paths []string, options
 	if options.MaxBytes < 1 || options.MaxTotalBytes < 1 || options.MaxFiles < 1 {
 		return errors.New("source redaction limits must be positive")
 	}
+	if err := recoverSourceInputs(ctx, paths, options); err != nil {
+		return err
+	}
 	files, err := sourceFilesSelected(ctx, paths, options.MaxFiles, options.IncludePath, options.SkipDirectory, options.NativePathFilters)
 	if err != nil {
 		return err
