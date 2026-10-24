@@ -116,6 +116,9 @@ func TestWindowsRestrictedTokenProcess(t *testing.T) {
 		{"recovery-content-change", TestWindowsRecoveryRejectsModifiedSourceContents},
 		{"recovery-hard-link", TestWindowsRecoveryRejectsNewHardLink},
 		{"rollback-flush-failure", TestWindowsFailedRollbackFlushRetainsEveryJournal},
+		{"recovery-sparse-journal-bound", TestWindowsRecoveryBoundsRejectOversizedSparseJournalBeforeAllocation},
+		{"recovery-cipher-budget", TestWindowsRecoveryBoundsRejectInsufficientCipherBudget},
+		{"recovery-original-budget", TestWindowsRecoveryBoundsRejectOriginalAboveConfiguredLimit},
 		{"native-crash-recovery", TestWindowsNativeCommandRecoversInterruptedWrite},
 	} {
 		t.Run(test.name, test.run)
