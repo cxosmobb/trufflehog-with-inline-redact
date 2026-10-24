@@ -31,6 +31,10 @@ func TestWindowsCrashRecoveryProcess(t *testing.T) {
 		secret = nativeTestSecret
 	}
 	originals := windowsCrashSourceBytes(secret)
+	maxBytes := int64(1 << 20)
+	if os.Getenv("TRUFFLEHOG_REDACT_CRASH_LARGE") == "1" {
+		maxBytes = 64 << 20
+	}
 	paths := []string{filepath.Join(dir, "first.go"), filepath.Join(dir, "nested", "second.go")}
 	root, err := openSourceRoot(paths)
 	if err != nil {
@@ -47,6 +51,9 @@ func TestWindowsCrashRecoveryProcess(t *testing.T) {
 			return bytes.ReplaceAll(data, []byte(secret), []byte(redaction.Marker)), redaction.Report{}, nil
 		})
 		options := Defaults()
+		if os.Getenv("TRUFFLEHOG_REDACT_CRASH_LARGE") == "1" {
+			options.MaxBytes = maxBytes
+		}
 		expectedCalls := len(paths)
 		if mode == "retry-filtered" {
 			expectedCalls = 1
@@ -96,7 +103,7 @@ func TestWindowsCrashRecoveryProcess(t *testing.T) {
 			if err != nil {
 				t.Fatal("cannot resolve recovery fixture")
 			}
-			if recovered, err := recoverWindowsSource(root, relative, 1<<20, write); err != nil || !recovered {
+			if recovered, err := recoverWindowsSource(root, relative, maxBytes, write); err != nil || !recovered {
 				t.Fatal("cannot reach interrupted recovery write")
 			}
 		}
@@ -175,9 +182,13 @@ func windowsCrashPause(t *testing.T) {
 
 func windowsCrashSourceBytes(secret string) [][]byte {
 	body := strings.Repeat("0123456789abcdef", 1024)
+	secondBody := body
+	if os.Getenv("TRUFFLEHOG_REDACT_CRASH_LARGE") == "1" {
+		secondBody = strings.Repeat("0123456789abcdef", (33<<20)/16)
+	}
 	return [][]byte{
 		[]byte("// first prefix " + secret + " " + body + " first suffix\r\n"),
-		[]byte("// second prefix " + secret + " " + body + " tail " + secret + " second suffix\r\n"),
+		[]byte("// second prefix " + secret + " " + secondBody + " tail " + secret + " second suffix\r\n"),
 	}
 }
 

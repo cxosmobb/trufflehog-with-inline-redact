@@ -200,3 +200,25 @@ func TestSecurityMalformedConnectionWithholdsSource(t *testing.T) {
 		t.Fatal("a query password authorized output with an unparsed userinfo credential")
 	}
 }
+
+func TestSecurityDetectorWorkBudgetIsSharedAndBounded(t *testing.T) {
+	if uint64(maxDetectorWorkBytes) > uint64(^uint32(0)>>1) {
+		t.Fatal("detector work limit cannot fit a 32-bit accumulator")
+	}
+	calls := 0
+	d := securityDetector{testDetector: &testDetector{secret: "workbudget"}, fromData: func(context.Context, []byte) ([]detectors.Result, error) {
+		calls++
+		return nil, nil
+	}}
+	s, _ := New([]detectors.Detector{d})
+	input := []byte("workbudget")
+	budget := archiveBudget{detectorWork: maxDetectorWorkBytes - 2*len(input)}
+	output, _, err := s.redactContent(context.Background(), input, 0, &budget)
+	if err != nil || !bytes.Equal(output, input) || calls != 2 || budget.detectorWork != maxDetectorWorkBytes {
+		t.Fatal("mapping and residual audit did not share the exact remaining work allowance")
+	}
+	output, _, err = s.redactContent(context.Background(), input, 0, &budget)
+	if err == nil || output != nil || calls != 2 || budget.detectorWork != maxDetectorWorkBytes {
+		t.Fatal("subsequent content escaped its shared work limit or reached a detector")
+	}
+}

@@ -2,7 +2,8 @@
 
 Reviewed on 2026-10-08, 2026-10-19, 2026-10-23, and 2026-10-24. The review covers the fork additions and their interaction
 with the original detector results, decoders, filesystem command, and update CI.
-Reproductions use synthetic local credentials; verification remains disabled.
+Unit reproductions use synthetic local credentials; integration also uses the
+public, intentionally vulnerable WrongSecrets fixture. Verification remains disabled.
 
 ## Findings and repairs
 
@@ -140,6 +141,82 @@ idempotence and preserved Windows file identity. Both native and
 wrapper executables are bound to the same reviewed source revision and archive
 allowlist; the isolated publisher validates both x64 executable headers without
 running them or checking out repository code.
+
+## WrongSecrets hardening
+
+The repository case is pinned to OWASP WrongSecrets
+`1b51b6fbcaaba5fd69389d551d2f41ec922a4135`: all 969 tracked files and
+225,524,378 original bytes, including four roughly 42 MiB Swift binaries and
+JAR contents. The application and its scripts are never executed. The acceptance
+test requires positive ordinary findings, the same findings while editing,
+zero ordinary findings afterward, positive scan metrics, no handler/read errors,
+a pinned full-content manifest, unchanged inventory and Windows identities, and
+byte-idempotence. The fixture
+and these requirements describe the test target; passing evidence belongs to the
+specific source revision's Linux and Windows CI results.
+
+The fixes retain conservative limits and precise edits:
+
+- Source/output and per-version Windows recovery caps are 64 MiB; cumulative
+  decoded views and expanded archive data are bounded at 256 MiB. The default
+  per-file CLI limit remains 16 MiB, requiring an explicit increase for this
+  fixture. Previous v1 recovery records remain readable. Tests cover large
+  unchanged inputs, EOF/chunk-boundary secrets, oversized refusal, and real
+  termination during a large write and recovery under the restricted token.
+- Classic Store/Deflate ZIP/JAR inputs are validated before member scanning.
+  Unchanged containers retain their exact bytes; changed members are rebuilt
+  and revalidated. Entry, nesting and expanded-byte bounds remain enforced.
+  Mapping, residual auditing, metadata and all nested members share one finite
+  detector-input budget of `(2 << 30) - 1` bytes. It combines the former separate
+  phase allowances within a 32-bit-safe cap instead of resetting per member.
+  Encryption, ZIP64, unsafe/ambiguous layouts, unsupported
+  formats and detected secrets in archive metadata fail closed. Edits to
+  recognized signed packages are refused. Container headers/compression can
+  change while unrelated logical member contents remain intact.
+- Source-mode Slack extraction includes the complete final webhook token.
+  JDBC/Postgres marker checks inspect parsed password components, including
+  duplicate parameters; a real password must not disappear behind another
+  `REDACTED` value. Marker substrings, unfamiliar/malformed layouts and verified
+  credentials are retained as candidates. Only reviewed password-free JDBC URL
+  forms are connection metadata. Unknown query properties, fragments and vendor
+  host-property/multi-host syntax do not qualify for harmless/marker-only
+  classification: source mode refuses unsupported credential roles before
+  normalization can discard them. This includes MySQL `password1/2/3` and
+  pgJDBC `sslpassword`; the existing precisely parsed MySQL `tcp(host:port)`
+  path remains supported. Ordinary extraction, verification and result controls
+  remain available.
+- Shortening an executable string can move an unrelated identifier into a
+  detector's keyword window. Structurally recognized ELF, PE and thin Mach-O
+  inputs therefore receive the exact encoded `REDACTED` replacement plus ASCII
+  space padding only inside the original mapped secret extent. File length,
+  offsets and neighboring bytes stay fixed; a replacement wider than its extent
+  fails closed. NUL padding was insufficient: HTML decoding removed it and
+  promoted unrelated public identifiers into new Box candidates. ASCII spaces
+  avoid that observed cascade; all decoded views still undergo residual auditing
+  and any remaining/new credential candidate blocks output. Structural
+  recognition does not establish full executable validity,
+  runtime behavior, checksum correctness or signature integrity. Java class
+  files and fat Mach-O headers do not select this fixed-extent behavior.
+
+Precisely mapped views apply the same identifier-boundary rule during edits and
+residual checks, so unrelated identifier substrings stay intact. For HTML, a lazy
+bounded provenance check can additionally prove that the full residual match
+belongs to one unchanged contiguous ASCII source run in text, a quoted attribute
+or a comment. Audit-only random sentinels track runs through tokenization/DOM
+normalization; stripping them must reproduce the original canonical decoder bytes
+exactly. Only a match with no credential boundary inside that single run can be
+retained as part of a larger identifier. These sentinels never reach source
+files or replace the complete post-edit detector input.
+
+Entity decoding, invisible-character removal, cross-markup joins, partial matches
+and malformed/unproved provenance keep strict residual treatment. A remaining
+paired component joined to `REDACTED` cannot pass merely because the paired
+detector stops firing. Ordinary HTML decoder output and full post-edit detector
+checks remain unchanged; this is a source-ownership proof, not a result mask.
+
+These changes do not suppress detector types or omit binary/archive files to
+obtain a zero. Residual audits still refuse edits that leave actual credential
+components or introduce an ambiguous candidate.
 
 ## Validation
 

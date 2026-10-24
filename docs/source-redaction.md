@@ -148,16 +148,39 @@ Plaintext, Unicode escapes, HTML entities, percent encoding, UTF-16, and ASCII
 base64 envelopes have offset-preserving views. UTF-16 uses an encoded marker.
 For base64, only sensitive *decoded* bytes become `REDACTED`, then the original
 envelope is reencoded; other decoded bytes are unchanged. In JSON, the quotes
-and surrounding properties remain in place. The marker changes string lengths
-and may make a credential unusable or violate a schema; source parsing and
+and surrounding properties remain in place. In ordinary text, replacement can
+change string lengths, make a credential unusable or violate a schema; parsing and
 application execution are not guaranteed after replacing credential values.
 
-TruffleHog's current decoder outputs are also audited. A finding from a lossy or
-new decoder which cannot be mapped precisely blocks edited-source output or
-in-place commit. Unknown credential component names, unmatched sensitive values,
+For structurally recognized ELF, PE and thin Mach-O inputs, the precisely mapped
+secret extent instead receives the exact encoded `REDACTED` replacement followed
+by ASCII space padding within that original extent. No neighboring bytes are
+used for padding: file length and subsequent offsets stay fixed. HTML decoding
+removed NUL padding in a reproduced case and promoted unchanged public values;
+ASCII spaces avoid that observed cascade. Decoded views still undergo residual
+auditing, and a new or remaining credential candidate blocks output. If the
+replacement cannot fit, the batch fails closed. Header recognition and
+fixed offsets do not guarantee executable validity, application behavior, valid
+checksums or signature integrity. This rule does not classify Java class files
+or fat Mach-O containers as thin executables.
+
+TruffleHog's current decoder outputs are also audited. Precisely mapped views
+use the same identifier-boundary rule as source edits, preserving unrelated
+identifier substrings. HTML has one narrow additional proof: an entire residual
+match must lie inside one unchanged contiguous ASCII source run and fail the
+credential boundary test within that run. Random, audit-only sentinels establish
+those intervals, and their removal must reproduce the canonical HTML bytes
+exactly. They never alter source files, ordinary decoding or the complete
+post-edit detector view. Cross-markup, entity/invisible-character joins and
+ambiguous or malformed provenance retain strict checks; an unproved residual
+blocks output. A finding from a lossy or new decoder which cannot be mapped
+precisely blocks edited-source output or in-place commit. Unknown credential component names, unmatched sensitive values,
 conflicting encoded edits, detector errors, cancellation, and limits do likewise. Nested
-encodings have a bounded mapping depth. Archives, compressed files, and PDFs
-must be extracted into source files before running this command.
+encodings have a bounded mapping depth. Bounded classic ZIP/JAR containers are
+validated and scanned in memory. Unchanged archives retain their exact bytes;
+changed members are rebuilt while unchanged member contents are retained.
+Unsupported, corrupt or encrypted containers fail closed. Other compressed
+formats and PDFs must be extracted into source files before running this command.
 Detector and upstream decoder calls use TruffleHog's 10 KiB source chunks with
 a 3 KiB overlap. As with ordinary scanning, a credential requiring more context
 than a chunk can escape detection. Whole-source provenance still maps every
@@ -239,15 +262,73 @@ The compatibility wrapper retains `--max-bytes`, `--max-total-bytes`,
 scope without path filters, so its file/directory counts include excluded files.
 Configured per-file and total limits bound the current recovered source files;
 original versions in pending records also face the configured per-file bound.
-Recovery records separately cap each original/redacted version at 32 MiB, check
+Recovery records separately cap each original/redacted version at 64 MiB, check
 ciphertext size before allocation or decryption, and enforce an aggregate
 encrypted-journal budget of 16 times the total input limit plus 16 MiB. Increasing
-CLI limits does not remove the fixed 32 MiB source/view limits.
+CLI limits does not remove the fixed 64 MiB source/view limits.
 Limit overruns fail rather than skipping files. Fixed library budgets additionally
-cap decoded views (32 MiB each, 128 MiB total), provenance, findings, source edits,
-residual-match patterns, and detector work. Increasing CLI limits does not disable
-these safeguards. A deadline cannot interrupt a detector or blocking read which
+cap decoded views (64 MiB each, 256 MiB total), provenance, findings, source edits,
+residual-match patterns, and detector work. One finite detector-work allowance of
+2,147,483,647 input bytes is shared across mapping, residual auditing and nested
+archive members/metadata; it counts repeated detector input, not just source size.
+Increasing CLI limits does not disable these safeguards. A deadline cannot
+interrupt a detector or blocking read which
 ignores cancellation; use process-level resource limits for hostile imports.
+
+## WrongSecrets integration
+
+The pinned integration target is the complete OWASP WrongSecrets working tree at
+`1b51b6fbcaaba5fd69389d551d2f41ec922a4135`: 969 tracked files and
+225,524,378 original bytes. The fixture is fetched separately and never executed.
+Only Git metadata is omitted from the exported input; binaries and JARs remain.
+Both compatibility jobs require this acceptance test; use the specific revision's
+CI results to establish a completed pass.
+
+Use the same updated fork executable for both ordinary scans. Older builds may
+still report password-free JDBC URLs or exact `REDACTED` password placeholders.
+Those candidates are not surviving original credentials. This fork recognizes
+only reviewed password-free or exact-marker cases; mixed credentials and unknown
+connection roles remain candidates or block source editing.
+
+Use the same ordinary scan before and after redaction:
+
+```powershell
+.\trufflehog.exe --no-update --no-verification --json --fail-on-scan-errors --fail filesystem .\wrongsecrets-input
+.\trufflehog.exe --no-update --no-verification --json --fail-on-scan-errors --redaction-max-bytes=67108864 --redaction-timeout=15m filesystem --in-place .\wrongsecrets-input
+.\trufflehog.exe --no-update --no-verification --json --fail-on-scan-errors --fail filesystem .\wrongsecrets-input
+```
+
+The first ordinary scan must report candidates and exit 183. In-place redaction
+must exit zero, and the last scan must exit zero with no findings and positive
+scan metrics. The explicit 64 MiB file limit accommodates the four roughly
+42 MiB Swift binaries; the default 16 MiB file limit remains available for smaller
+imports. A failed edit is not a passing zero-findings scan.
+
+The integration test compares original findings with in-place findings, checks
+all file names and Windows identities, rejects handler/read errors and leftover
+recovery records, and repeats redaction to verify byte-for-byte idempotence.
+It uses no live credential verification and prints no credential values.
+
+Source-mode Slack webhook extraction captures the complete final token rather
+than a prefix. Parsed password-free JDBC URLs are connection metadata; unverified
+JDBC/Postgres results containing only exact `REDACTED` passwords are recognized
+as markers only when all connection properties and host syntax have reviewed
+roles. Unknown properties, fragments and unsupported vendor/multi-host layouts
+cannot be classified as password-free or marker-only; source mode fails closed
+when their credential roles cannot be established. The existing precisely parsed
+MySQL `tcp(host:port)` path remains supported. Verified credentials, duplicate
+real passwords and longer passwords containing that word remain candidates.
+Ordinary extraction, verification and result controls remain available.
+
+ZIP support is intentionally bounded: classic Store/Deflate entries, safe ASCII
+member paths, at most 4,096 total entries and five nesting levels, and at most
+256 MiB expanded data across an archive request. Encryption, ZIP64, corrupt or
+ambiguous layouts, unsupported compression and prefixed/self-extracting layouts
+are refused. Detected secrets in ZIP names, comments or extra fields fail closed;
+edits to recognized signed packages are refused. Archive rewrites can change
+container headers and compression while preserving unrelated logical member
+contents. Large inputs retain both source versions in memory, and Windows DPAPI
+adds bounded temporary copies; use process memory limits for hostile imports.
 
 ## Coverage and updates
 

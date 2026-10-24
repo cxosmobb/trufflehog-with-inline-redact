@@ -61,7 +61,7 @@ disarmed payload can be removed without undoing a completed target.
 
 Recovery precedes detector execution and path filters, and inspects the explicit
 input scope even when current filters exclude a torn file. Preserve unfiltered
-file/directory count bounds, configured current-source limits, the 32 MiB
+file/directory count bounds, configured current-source limits, the 64 MiB
 per-version record cap, ciphertext checks before allocation/DPAPI, and the
 aggregate journal budget. Treat format changes as compatibility changes: do not
 silently overwrite an existing reserved stream, skip an unknown record, or drop
@@ -71,7 +71,7 @@ contents.
 Run the Windows crash regressions together with the full corpus:
 
 ```powershell
-go test -p 2 -count=1 -timeout=30m ./internal/sourceredact -run '^TestWindows(ProcessKill|Interrupted|Recovery|ActiveTransaction|FailedRollbackFlush|NativeCommandRecovers)'
+go test -p 2 -count=1 -timeout=30m ./internal/sourceredact -run '^TestWindows(ProcessKill|Interrupted|Recovery|ActiveTransaction|FailedRollbackFlush|NativeCommandRecovers|LargeSourceProcessKillRecovery)'
 ```
 
 Use the mandatory compatibility run's `REDACTION_TEST_MAIN_BINARY` and
@@ -165,3 +165,81 @@ a pass. Keep hard-link, read-only, lock, controlled rollback and real
 process-termination recovery regressions when changing Windows file commits.
 The journal provides recovery on retry; neither a source write nor a whole
 batch becomes an atomic filesystem transaction.
+
+## Pinned WrongSecrets regression
+
+The compatibility workflow exports every tracked file from OWASP WrongSecrets
+revision `1b51b6fbcaaba5fd69389d551d2f41ec922a4135`: 969 files and 225,524,378
+original bytes, without running its application or deployment scripts. Keep the
+fixture outside the fork's tracked source. `TestWrongSecretsRepositoryInPlace` requires positive
+ordinary findings, exact preservation of the original findings during editing,
+zero ordinary findings afterward, and an unchanged second pass. Both platforms
+must pass it against the full native executable with no path or detector
+exclusions.
+Treat only completed results for that source revision as passing evidence.
+
+Unit tests do not fetch this fixture. To run the integration locally, supply
+`REDACTION_WRONGSECRETS_FIXTURE`, `REDACTION_WRONGSECRETS_REVISION` and
+`REDACTION_TEST_MAIN_BINARY`; then run:
+
+```sh
+go test -count=1 -v -timeout=25m ./internal/sourceredact -run '^TestWrongSecretsRepositoryInPlace$'
+```
+
+When updating the pinned fixture, review its contents, revise the immutable SHA
+in the workflow and test, and deliberately update the expected file count,
+original byte total and portable content-manifest digest together. The digest
+frames sorted slash-relative paths, decimal sizes and per-file SHA-256 hashes
+with NUL/NUL/LF delimiters using UTF-8. Keep complete file coverage,
+error/scan-metric assertions,
+private findings and exact source/idempotence checks. Do not make a broken scan
+pass by suppressing result classes, detector types, archives or binary inputs.
+The 64 MiB view/recovery caps accept previous v1 records within the former
+32 MiB cap; the record encoding and source binding remain unchanged.
+
+Maintain separate exact regressions for each file format and detector repair:
+
+- ELF/PE/thin Mach-O recognition must validate structural headers rather than
+  a magic prefix alone. Retain original file length and every byte outside the
+  mapped secret extent. Put the exact encoded marker first and ASCII space
+  padding after it within that extent; fail when it does not fit. NUL padding
+  is unsuitable because HTML decoding can remove it and collapse context.
+  Spaces avoid that reproduced cascade; retain fail-closed residual checks for
+  every decoded view instead of assuming universal decoded-context stability.
+  Test nearby public identifiers through every default decoder, encoded markers,
+  short spans and spoofed/truncated headers.
+  Never replace these checks with blanket binary skipping or claim that edited
+  executable checksums, signatures or runtime behavior remain valid.
+- ZIP/JAR tests must cover unchanged raw archives, exact logical member edits,
+  metadata, CRC/layout verification, signed-package refusal, traversal/duplicate
+  names, corruption and entry/depth/expansion/work budgets. Unsupported formats
+  continue to require extraction. Do not relax metadata or signature checks
+  merely because an archive has no current ordinary finding.
+- Preserve full source-mode Slack token capture and parsed JDBC/Postgres marker
+  rules. Exact markers must not hide another real userinfo/query password,
+  duplicate parameter, marker-containing real secret or unknown syntax. A new
+  query property or vendor host form needs an explicit credential-role review;
+  do not classify it as password-free/marker-only by ignoring unrecognized data.
+  Source mode must withhold unsupported roles, including alternate MySQL
+  passwords and pgJDBC SSL passwords. Preserve the existing parsed MySQL tcp
+  DSN path and ordinary extraction/verification controls.
+
+Use `--redaction-max-bytes=67108864` for this fixture, retaining the 16 MiB
+standard default. Raising CLI limits does not disable fixed view, provenance,
+archive, detector-work or journal bounds. Large-file tests must retain both
+EOF/chunk-boundary checks and actual interrupted large-write/undo recovery;
+Windows recovery coverage must also run in the restricted-token child.
+
+Keep the finite `(2 << 30) - 1` detector-input-byte budget shared across mapping,
+residual auditing, archive metadata and all nested members. Do not reset it for
+each member or silently remove it. Mapped residual views must use the edit
+resolver's identifier boundaries. HTML may relax a substring check only when
+bounded audit-only sentinels prove the entire match lies in one unchanged
+contiguous ASCII source run, its boundary is invalid within that run, and the
+sentinel-free canonical bytes exactly match ordinary decoding. Keep sentinel
+injection out of source files and detector input. Entity/invisible-character or
+cross-markup joins, malformed provenance and other lossy views retain strict
+checks. Preserve the regression where decoding joins an unredacted paired
+component to `REDACTED` and the paired detector stops firing: output must still
+be withheld. Retain complete post-edit detector scans and the provenance/match
+budgets; do not replace them with a context allowlist or output mask.
