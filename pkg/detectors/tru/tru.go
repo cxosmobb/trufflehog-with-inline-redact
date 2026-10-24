@@ -24,9 +24,11 @@ var _ detectors.Detector = (*Scanner)(nil)
 var (
 	client = common.SaneHttpClient()
 
-	// Make sure that your group is surrounded in boundary characters such as below to reduce false positives.
-	keyPat   = regexp.MustCompile(detectors.PrefixRegex([]string{"tru"}) + `\b([0-9a-z]{8}-[0-9a-z]{4}-[0-9a-z]{4}-[0-9a-z]{4}-[0-9a-z]{12})\b`)
-	secrePat = regexp.MustCompile(detectors.PrefixRegex([]string{"tru"}) + `\b([0-9a-zA-Z.-_]{26})\b`)
+	// Require a provider namespace component, rather than words like true or trust.
+	// Its separator counts toward the existing 40-character context window.
+	providerPrefix = `(?i:(?:^|[^a-z0-9])tru[^a-z0-9])(?:.|[\n\r]){0,39}?`
+	keyPat         = regexp.MustCompile(providerPrefix + `\b([0-9a-z]{8}-[0-9a-z]{4}-[0-9a-z]{4}-[0-9a-z]{4}-[0-9a-z]{12})\b`)
+	secrePat       = regexp.MustCompile(providerPrefix + `\b([0-9a-zA-Z.-_]{26})\b`)
 )
 
 // Keywords are used for efficiently pre-filtering chunks.

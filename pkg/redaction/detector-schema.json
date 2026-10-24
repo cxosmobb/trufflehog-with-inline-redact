@@ -4201,7 +4201,7 @@
     },
     {
       "path": "pkg/detectors/jdbc/jdbc.go",
-      "sha256": "dcaec2fac1247a48e5862efca09d120ed3d484a001adabf5171010387910d0db",
+      "sha256": "7d4ae841df7c6d7995eb957a696c58d1a9e03281f98311f32646fbbb6b3fc341",
       "part_keys": [
         "connection_string"
       ],
@@ -6075,7 +6075,7 @@
     },
     {
       "path": "pkg/detectors/postgres/postgres.go",
-      "sha256": "926e7b91bde9209f2dc06a333486ebca2446c8b9aa7e3cb689aa911e945597eb",
+      "sha256": "b16d311738a98169159e1570c19e0f65f83b3118c9467b3fa420d1780dcb9068",
       "part_keys": [
         "connection_string"
       ],
@@ -7211,7 +7211,7 @@
     },
     {
       "path": "pkg/detectors/slackwebhook/slackwebhook.go",
-      "sha256": "9d634a01a65da243898616f00fbfd45261dbb5572e42d34c651522d5572279a5",
+      "sha256": "6da50e9efdd33af688792a86865e6b83355f073b43ab3cc4b542da78d1f19b7b",
       "part_keys": [
         "key"
       ],
@@ -8033,7 +8033,7 @@
     },
     {
       "path": "pkg/detectors/tru/tru.go",
-      "sha256": "499a334732226a0d372560e29a0bf06f854b2b881c2870cec464245ebe2e6b23",
+      "sha256": "8576a9469cab08cb9d5a129cc75fbb4169a5a1c04c1da07ae3afbe0a96f5d4d4",
       "part_keys": [
         "key",
         "secret"
@@ -8931,6 +8931,13 @@
     {
       "path": "pkg/decoders/html.go",
       "sha256": "aeb15a6a3d3b43aeb50f3989bc002cd791a81c05ef43a7d5ea94e68e4439ef10",
+      "part_keys": null,
+      "from_data": false,
+      "delegating": false
+    },
+    {
+      "path": "pkg/decoders/html_redaction_audit.go",
+      "sha256": "63634bce30ae3674b1b3231ce08df1b1e3aa4f3c00bd49cd282a0d5ea935a45c",
       "part_keys": null,
       "from_data": false,
       "delegating": false

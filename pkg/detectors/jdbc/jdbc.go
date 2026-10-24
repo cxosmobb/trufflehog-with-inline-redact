@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"net/url"
 	"regexp" //nolint:depguard // used instead of github.com/wasilibs/go-re2 due to differences in utf-8 handling
 	"strings"
 	"time"
@@ -67,17 +68,34 @@ func (s Scanner) FromData(ctx context.Context, verify bool, data []byte) (result
 	logCtx := logContext.AddLogger(ctx)
 	dataStr := string(data)
 
-	matches := keyPat.FindAllStringSubmatch(dataStr, -1)
+	matches := keyPat.FindAllStringIndex(dataStr, -1)
 matchLoop:
 	for _, match := range matches {
+		jdbcConn := dataStr[match[0]:match[1]]
 		if len(s.ignorePatterns) != 0 {
 			for _, ignore := range s.ignorePatterns {
-				if ignore.MatchString(match[0]) {
+				if ignore.MatchString(jdbcConn) {
 					continue matchLoop
 				}
 			}
 		}
-		jdbcConn := match[0]
+
+		// A password-free URL is connection metadata, not a source secret.
+		// Keep ordinary extraction stable; the engine applies IsFalsePositive.
+		if detectors.SourceRedactionEnabled(ctx) {
+			// The ordinary regex stops before a comma. Do not mistake the
+			// first host of a multi-host URL for a complete password-free URL.
+			if match[1] < len(dataStr) && dataStr[match[1]] == ',' {
+				return nil, errors.New("JDBC source URL uses unsupported host syntax")
+			}
+			passwords, known, parseErr := jdbcURLPasswords(jdbcConn)
+			if parseErr != nil {
+				return nil, parseErr
+			}
+			if known && len(passwords) == 0 {
+				continue
+			}
+		}
 
 		result := detectors.Result{
 			DetectorType: detector_typepb.DetectorType_JDBC,
@@ -130,8 +148,108 @@ matchLoop:
 	return
 }
 
-func (s Scanner) IsFalsePositive(_ detectors.Result) (bool, string) {
-	return false, ""
+func (s Scanner) IsFalsePositive(result detectors.Result) (bool, string) {
+	if result.Verified {
+		return false, ""
+	}
+	passwords, known, _ := jdbcURLPasswords(string(result.Raw))
+	if !known {
+		return false, ""
+	}
+	if len(passwords) == 0 {
+		return true, "JDBC URL contains no password"
+	}
+	for _, password := range passwords {
+		if password != "REDACTED" {
+			return false, ""
+		}
+	}
+	return true, "JDBC passwords are redaction markers"
+}
+
+// Only classify reviewed hierarchical URL syntax. Other connection formats stay
+// candidates; unreviewed properties in a supported URL must also stop source
+// redaction because a driver may interpret them as additional credentials.
+func jdbcURLPasswords(conn string) ([]string, bool, error) {
+	if len(conn) < len("jdbc:") || !strings.EqualFold(conn[:len("jdbc:")], "jdbc:") {
+		return nil, false, nil
+	}
+	value := conn[len("jdbc:"):]
+	scheme, rest, _ := strings.Cut(value, ":")
+	switch strings.ToLower(scheme) {
+	case "mysql", "postgres", "postgresql":
+	default:
+		return nil, false, nil
+	}
+	if !strings.HasPrefix(rest, "//") {
+		return nil, false, nil
+	}
+	unsupported := errors.New("JDBC source URL uses unsupported connection properties")
+	if strings.ContainsAny(value, ";#") {
+		return nil, false, unsupported
+	}
+	_, rawQuery, _ := strings.Cut(value, "?")
+	query, err := url.ParseQuery(rawQuery)
+	if err != nil {
+		return nil, false, unsupported
+	}
+	for key, values := range query {
+		switch strings.ToLower(key) {
+		case "password", "pwd", "spring.datasource.password", "user", "sslmode":
+		case "ssl":
+			// pgJDBC defines ssl as Boolean connection metadata. Keep its
+			// accepted syntax narrow; sslpassword is an independent secret.
+			if !strings.EqualFold(scheme, "postgres") && !strings.EqualFold(scheme, "postgresql") {
+				return nil, false, unsupported
+			}
+			for _, value := range values {
+				if value != "" && !strings.EqualFold(value, "true") && !strings.EqualFold(value, "false") {
+					return nil, false, unsupported
+				}
+			}
+		default:
+			// MySQL password1/2/3 and pgJDBC sslpassword are credentials,
+			// not public properties. Unknown future properties are not safe.
+			return nil, false, unsupported
+		}
+	}
+	authority := rest[2:]
+	if end := strings.IndexAny(authority, "/?"); end >= 0 {
+		authority = authority[:end]
+	}
+	if at := strings.LastIndexByte(authority, '@'); at >= 0 {
+		authority = authority[at+1:]
+	}
+	// Keep the existing precisely parsed MySQL tcp(host:port) DSN path.
+	// It is never classified as password-free URL metadata.
+	if strings.HasPrefix(authority, "tcp(") && strings.HasSuffix(authority, ")") &&
+		!strings.ContainsAny(authority[4:len(authority)-1], "(),=%\\") {
+		return nil, false, nil
+	}
+	if strings.ContainsAny(authority, "(),=%\\") {
+		return nil, false, unsupported
+	}
+	u, err := url.Parse(value)
+	if err != nil || u.Host == "" || u.Opaque != "" {
+		return nil, false, nil
+	}
+	var passwords []string
+	if u.User != nil {
+		if password, ok := u.User.Password(); ok && password != "" {
+			passwords = append(passwords, password)
+		}
+	}
+	for key, values := range query {
+		switch strings.ToLower(key) {
+		case "password", "pwd", "spring.datasource.password":
+			for _, password := range values {
+				if password != "" {
+					passwords = append(passwords, password)
+				}
+			}
+		}
+	}
+	return passwords, true, nil
 }
 
 func tryRedactAnonymousJDBC(conn string) string {

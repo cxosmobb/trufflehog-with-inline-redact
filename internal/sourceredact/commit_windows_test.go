@@ -106,6 +106,7 @@ func TestWindowsRestrictedTokenProcess(t *testing.T) {
 		{"partial-write-rollback", TestWindowsPartialWriteRollsBackCurrentAndPriorSources},
 		{"cancel-after-write", TestWindowsCancellationAfterWriteRollsBack},
 		{"process-kill-recovery", TestWindowsProcessKillDuringWriteRecoversBatch},
+		{"large-source-kill-recovery", TestWindowsLargeSourceProcessKillRecovery},
 		{"interrupted-recovery", TestWindowsInterruptedRecoveryCanResume},
 		{"interrupted-journal-cleanup", TestWindowsInterruptedJournalCleanupKeepsCompletedTarget},
 		{"active-transaction", TestWindowsActiveTransactionCannotBeRecovered},

@@ -19,7 +19,7 @@ import (
 const (
 	windowsRecoveryDataStream  = ":trufflehog-redact-recovery-v1"
 	windowsRecoveryReadyStream = ":trufflehog-redact-recovery-ready-v1"
-	windowsRecoveryMaxPart     = 32 << 20
+	windowsRecoveryMaxPart     = 64 << 20
 	windowsRecoveryMaxHeader   = 1 << 20
 	windowsRecoveryMaxPlain    = 2*windowsRecoveryMaxPart + windowsRecoveryMaxHeader + 12
 	windowsRecoveryMaxCipher   = windowsRecoveryMaxPlain + 1<<20
@@ -161,7 +161,7 @@ func recoverWindowsSourceWithBudget(root *os.Root, relative string, maxBytes int
 		return false, errWindowsRecovery
 	}
 	// The source budget is checked before allocating or asking DPAPI to
-	// decrypt an imported ADS. Redaction's output independently caps at 32 MiB.
+	// decrypt an imported ADS. Redaction's output independently caps at 64 MiB.
 	cipherLimit := min(maxBytes, int64(windowsRecoveryMaxPart)) + windowsRecoveryMaxPart + windowsRecoveryMaxHeader + 12 + 1<<20
 	cipherInfo, statErr := journal.data.Stat()
 	if statErr != nil || cipherInfo.Size() < 1 || cipherInfo.Size() > cipherLimit {

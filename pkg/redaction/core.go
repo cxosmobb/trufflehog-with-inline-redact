@@ -29,7 +29,9 @@ const (
 	maxUniqueFindings    = 4096
 	maxResultsPerCall    = 8192
 	maxAuditPatternBytes = 128 << 10
-	maxDetectorWorkBytes = 1 << 30
+	// Share the former mapping/audit allowances across the complete source,
+	// including nested ZIP members. MaxInt32 also supports 32-bit builds.
+	maxDetectorWorkBytes = (2 << 30) - 1
 )
 
 // Span is a half-open byte range in a detector's source input.
@@ -61,9 +63,9 @@ func New(ds []detectors.Detector) (*Scanner, error) {
 	return &Scanner{detectors: append([]detectors.Detector(nil), ds...)}, nil
 }
 
-// Redact returns a new source buffer only after every finding has been mapped.
+// redactText returns source bytes only after every text finding has been mapped.
 // Errors contain detector names and reasons, never source bytes or credentials.
-func (s *Scanner) Redact(ctx context.Context, input []byte) (output []byte, report Report, err error) {
+func (s *Scanner) redactText(ctx context.Context, input []byte, detectorWork *int) (output []byte, report Report, err error) {
 	// A detector/decoder panic must not print its secret-bearing payload or
 	// release a partial source buffer. Fatal runtime faults require isolation.
 	defer func() {
@@ -84,7 +86,7 @@ func (s *Scanner) Redact(ctx context.Context, input []byte) (output []byte, repo
 	collectedSet := make([]map[span]struct{}, len(views))
 	originalSecrets := make(map[string]struct{})
 	seenFindings := make(map[[32]byte]struct{})
-	totalSpans, detectorWork := 0, 0
+	totalSpans := 0
 	collect := func(d detectors.Detector, result detectors.Result) error {
 		report.Detections++
 		parts, _ := json.Marshal(result.SecretParts)
@@ -147,7 +149,7 @@ func (s *Scanner) Redact(ctx context.Context, input []byte) (output []byte, repo
 		return nil
 	}
 	for _, candidate := range views {
-		if err := s.scanFindings(ctx, candidate.data, &detectorWork, collect); err != nil {
+		if err := s.scanFindings(ctx, candidate.data, detectorWork, collect); err != nil {
 			return nil, report, err
 		}
 	}
@@ -157,7 +159,7 @@ func (s *Scanner) Redact(ctx context.Context, input []byte) (output []byte, repo
 		return nil, report, err
 	}
 	for _, data := range decodedViews {
-		if err := s.scanFindings(ctx, data, &detectorWork, collect); err != nil {
+		if err := s.scanFindings(ctx, data, detectorWork, collect); err != nil {
 			return nil, report, err
 		}
 	}
@@ -174,7 +176,7 @@ func (s *Scanner) Redact(ctx context.Context, input []byte) (output []byte, repo
 		return nil, report, err
 	}
 	report.Replacements = count
-	if err := s.auditOutput(ctx, output, originalSecrets); err != nil {
+	if err := s.auditOutput(ctx, output, originalSecrets, detectorWork); err != nil {
 		return nil, report, err
 	}
 	return output, report, nil
@@ -250,8 +252,21 @@ func detectorChunks(data []byte, visit func([]byte) error) error {
 	return nil
 }
 
+// Preserve the original decoder output for detector execution. HTML source is
+// retained only for a lazy, independent residual-provenance proof if needed.
+type decodedSourceView struct{ data, htmlSource []byte }
+
 func upstreamDecodedViews(ctx context.Context, input []byte) ([][]byte, error) {
+	decoded, err := upstreamDecodedSourceViews(ctx, input)
 	var views [][]byte
+	for _, candidate := range decoded {
+		views = append(views, candidate.data)
+	}
+	return views, err
+}
+
+func upstreamDecodedSourceViews(ctx context.Context, input []byte) ([]decodedSourceView, error) {
+	var views []decodedSourceView
 	totalBytes := 0
 	err := detectorChunks(input, func(data []byte) error {
 		for _, decoder := range decoders.DefaultDecoders() {
@@ -260,8 +275,10 @@ func upstreamDecodedViews(ctx context.Context, input []byte) ([][]byte, error) {
 			}
 			chunk := &sources.Chunk{Data: bytes.Clone(data)}
 			var decoded *decoders.DecodableChunk
+			var htmlSource []byte
 			if htmlDecoder, ok := decoder.(*decoders.HTML); ok {
 				decoded = htmlDecoder.FromChunkForRedaction(chunk)
+				htmlSource = data
 			} else if escapedDecoder, ok := decoder.(*decoders.EscapedUnicode); ok {
 				decoded = escapedDecoder.FromChunkForRedaction(chunk)
 			} else {
@@ -272,7 +289,7 @@ func upstreamDecodedViews(ctx context.Context, input []byte) ([][]byte, error) {
 					return errors.New("upstream decoder view budget exceeded; source withheld")
 				}
 				totalBytes += len(decoded.Data)
-				views = append(views, decoded.Data)
+				views = append(views, decodedSourceView{decoded.Data, htmlSource})
 			}
 		}
 		return nil
@@ -282,7 +299,7 @@ func upstreamDecodedViews(ctx context.Context, input []byte) ([][]byte, error) {
 
 // auditOutput checks the edited source itself, including upstream's lossy views.
 // A literal duplicate cannot authorize leaving an unmappable encoded copy behind.
-func (s *Scanner) auditOutput(ctx context.Context, output []byte, originalSecrets map[string]struct{}) error {
+func (s *Scanner) auditOutput(ctx context.Context, output []byte, originalSecrets map[string]struct{}, detectorWork *int) error {
 	views, err := buildViews(output)
 	if err != nil {
 		return errors.New("cannot audit redacted source")
@@ -291,11 +308,13 @@ func (s *Scanner) auditOutput(ctx context.Context, output []byte, originalSecret
 	for _, v := range views {
 		dataViews = append(dataViews, v.data)
 	}
-	decodedViews, err := upstreamDecodedViews(ctx, output)
+	decodedViews, err := upstreamDecodedSourceViews(ctx, output)
 	if err != nil {
 		return err
 	}
-	dataViews = append(dataViews, decodedViews...)
+	for _, candidate := range decodedViews {
+		dataViews = append(dataViews, candidate.data)
+	}
 	// A single multi-pattern pass prevents the residual check from doing a
 	// complete source scan separately for each known secret.
 	patterns := make(map[string]struct{})
@@ -318,15 +337,70 @@ func (s *Scanner) auditOutput(ctx context.Context, output []byte, originalSecret
 		builder.AddString(pattern)
 	}
 	trie := builder.Build()
-	detectorWork := 0
-	for _, data := range dataViews {
+	auditMatches, provenanceUnits := 0, 0
+	for viewIndex, data := range dataViews {
+		var units []decoders.HTMLAuditUnit
+		unitsReady := false
 		if err := ctx.Err(); err != nil {
 			return err
 		}
-		if len(patterns) > 0 && trie.MatchFirst(data) != nil {
-			return errors.New("original sensitive component remains after redaction; source withheld")
+		if len(patterns) > 0 {
+			residual := false
+			var walkErr error
+			trie.Walk(data, func(end, length, _ int64) bool {
+				auditMatches++
+				if walkErr = ctx.Err(); walkErr != nil {
+					return false
+				}
+				if auditMatches > maxSourceSpans {
+					walkErr = errors.New("secret audit match limit exceeded; source withheld")
+					return false
+				}
+				start, stop := int(end-length+1), int(end+1)
+				if viewIndex < len(views) {
+					residual = literalBoundary(data, data[start:stop], start, stop)
+					return !residual
+				}
+				residual = true
+				candidate := decodedViews[viewIndex-len(views)]
+				if candidate.htmlSource == nil || literalBoundary(data, data[start:stop], start, stop) {
+					return false
+				}
+				if !unitsReady {
+					// Never alter the decoder view used by detector execution.
+					// Build source-unit proof only when a known component would
+					// otherwise remain inside a larger HTML identifier.
+					audited, intervals, err := (&decoders.HTML{}).FromChunkForRedactionAudit(&sources.Chunk{Data: bytes.Clone(candidate.htmlSource)})
+					if err != nil || audited == nil || !bytes.Equal(audited.Data, data) || len(intervals) > maxAllViewPieces-provenanceUnits {
+						walkErr = errors.New("cannot prove HTML residual source boundaries; source withheld")
+						return false
+					}
+					previous := 0
+					for _, interval := range intervals {
+						if interval.Start < previous || interval.End <= interval.Start || interval.End > len(data) {
+							walkErr = errors.New("invalid HTML residual source boundaries; source withheld")
+							return false
+						}
+						previous = interval.End
+					}
+					units, unitsReady = intervals, true
+					provenanceUnits += len(units)
+				}
+				i := sort.Search(len(units), func(i int) bool { return units[i].End > start })
+				if i < len(units) && units[i].Start <= start && stop <= units[i].End {
+					unit := data[units[i].Start:units[i].End]
+					residual = literalBoundary(unit, data[start:stop], start-units[i].Start, stop-units[i].Start)
+				}
+				return !residual
+			})
+			if walkErr != nil {
+				return walkErr
+			}
+			if residual {
+				return errors.New("original sensitive component remains after redaction; source withheld")
+			}
 		}
-		if err := s.scanFindings(ctx, data, &detectorWork, func(d detectors.Detector, result detectors.Result) error {
+		if err := s.scanFindings(ctx, data, detectorWork, func(d detectors.Detector, result detectors.Result) error {
 			remains, err := hasUnredactedComponent(result)
 			if err != nil || remains {
 				return fmt.Errorf("detector %s found residual or unauditable credential material; source withheld", d.Type())
@@ -367,6 +441,17 @@ func applyEdits(input []byte, edits []edit) ([]byte, int, error) {
 			}
 		}
 		merged = append(merged, e)
+	}
+	if compiledBinary(input) {
+		for i := range merged {
+			width := merged[i].end - merged[i].start
+			if len(merged[i].replacement) > width {
+				return nil, 0, errors.New("binary replacement exceeds its source extent; source withheld")
+			}
+			padded := bytes.Repeat([]byte{' '}, width)
+			copy(padded, merged[i].replacement)
+			merged[i].replacement = padded
+		}
 	}
 	outputSize := int64(len(input))
 	for _, e := range merged {

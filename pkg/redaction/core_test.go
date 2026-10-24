@@ -222,3 +222,167 @@ func TestSourceEditBudgetUsesFinalSize(t *testing.T) {
 		t.Fatal("oversized final output was released")
 	}
 }
+
+func TestSourceRedactionPreservesSensitiveSubstringsInPublicIdentifiers(t *testing.T) {
+	const secret = "pass4829"
+	d := securityDetector{testDetector: &testDetector{secret: secret}, fromData: func(_ context.Context, data []byte) ([]detectors.Result, error) {
+		if !bytes.Contains(data, []byte(`password="`+secret+`"`)) {
+			return nil, nil
+		}
+		return []detectors.Result{{DetectorType: detector_typepb.DetectorType_Twilio, SecretParts: map[string]string{"key": secret}}}, nil
+	}}
+	s, _ := New([]detectors.Detector{d})
+	input := []byte(`password="pass4829"; pass4829Utility="keep"; prefixpass4829="keep"; prefixpass4829Suffix="keep"; again="pass4829"`)
+	want := []byte(`password="REDACTED"; pass4829Utility="keep"; prefixpass4829="keep"; prefixpass4829Suffix="keep"; again="REDACTED"`)
+	output, report, err := s.Redact(context.Background(), input)
+	if err != nil || !bytes.Equal(output, want) || report.Replacements != 2 {
+		t.Fatal("residual audit rejected preserved public identifiers or altered their bytes")
+	}
+}
+
+func TestResidualAuditUsesMappingBoundariesWithoutMissingOverlaps(t *testing.T) {
+	d := &testDetector{secret: "never-present-sensitive-fixture", parts: map[string]string{"key": "never-present-sensitive-fixture"}}
+	s, _ := New([]detectors.Detector{d})
+	for _, tc := range []struct {
+		name, output string
+		values       map[string]struct{}
+		wantError    bool
+	}{
+		{"public identifier", `prefixpass4829Suffix pass4829Utility prefixpass4829`, map[string]struct{}{"pass4829": {}}, false},
+		{"standalone residual", `password="pass4829"`, map[string]struct{}{"pass4829": {}}, true},
+		{"residual after public identifier", `pass4829Utility; password="pass4829"`, map[string]struct{}{"pass4829": {}}, true},
+		{"overlapping longer residual", `passwordUtility; value="password"`, map[string]struct{}{"pass": {}, "password": {}}, true},
+		{"encoded residual", `password="pa\u0073s4829"`, map[string]struct{}{"pass4829": {}}, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			work := 0
+			err := s.auditOutput(context.Background(), []byte(tc.output), tc.values, &work)
+			if (err != nil) != tc.wantError {
+				t.Fatal("residual audit disagrees with precise mapping boundaries")
+			}
+		})
+	}
+}
+
+func TestResidualAuditBoundsInvalidBoundaryMatches(t *testing.T) {
+	d := &testDetector{secret: "never-present-sensitive-fixture", parts: map[string]string{"key": "never-present-sensitive-fixture"}}
+	s, _ := New([]detectors.Detector{d})
+	work := 0
+	output := []byte(strings.Repeat("pass4829Utility ", maxSourceSpans+1))
+	err := s.auditOutput(context.Background(), output, map[string]struct{}{"pass4829": {}}, &work)
+	if err == nil || err.Error() != "secret audit match limit exceeded; source withheld" {
+		t.Fatal("unbounded residual match callbacks were not withheld")
+	}
+}
+func TestResidualAuditRejectsJoinedComponentsWithoutBoundaries(t *testing.T) {
+	d := &testDetector{secret: "never-present-sensitive-fixture", parts: map[string]string{"key": "never-present-sensitive-fixture"}}
+	s, _ := New([]detectors.Detector{d})
+	for name, output := range map[string]string{
+		"word prefix":   `<span>prefix</span><span>pa</span><span>ss4829</span>`,
+		"word suffix":   `<span>pa</span><span>ss4829</span><span>Suffix</span>`,
+		"marker prefix": `<span>REDACTED</span><span>pa</span><span>ss4829</span>`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			work := 0
+			if err := s.auditOutput(context.Background(), []byte(output), map[string]struct{}{"pass4829": {}}, &work); err == nil {
+				t.Fatal("lossy HTML joining hid an original sensitive component behind a word boundary")
+			}
+		})
+	}
+}
+func TestResidualHTMLAuditPreservesProvenPublicIdentifiers(t *testing.T) {
+	d := &testDetector{secret: "never-present-sensitive-fixture", parts: map[string]string{"key": "never-present-sensitive-fixture"}}
+	s, _ := New([]detectors.Detector{d})
+	for name, output := range map[string]string{
+		"text":                 `<p>prefixpass4829Suffix</p>`,
+		"attribute":            `<a title="prefixpass4829Suffix">safe</a>`,
+		"comment":              `<!-- prefixpass4829Suffix -->`,
+		"transforms elsewhere": `<p>&amp; prefixpass4829Suffix &lt;</p>`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			work := 0
+			if err := s.auditOutput(context.Background(), []byte(output), map[string]struct{}{"pass4829": {}}, &work); err != nil {
+				t.Fatal("unchanged source identifier was rejected by the HTML residual audit")
+			}
+		})
+	}
+}
+
+func TestResidualHTMLAuditRejectsChangedAndCrossUnitComponents(t *testing.T) {
+	d := &testDetector{secret: "never-present-sensitive-fixture", parts: map[string]string{"key": "never-present-sensitive-fixture"}}
+	s, _ := New([]detectors.Detector{d})
+	for name, output := range map[string]string{
+		"ignored markup":      `<p>prefixpa</a>ss4829Suffix</p>`,
+		"invisible":           "<p>prefixpa\u200Bss4829Suffix</p>",
+		"entity":              `<p>prefixpa&#x73;s4829Suffix</p>`,
+		"attribute transform": `<a title="prefixpa%73s4829Suffix">safe</a>`,
+		"ignored duplicate":   `<a class="prefixpass4829Suffix">prefixpa</a><span>ss4829Suffix</span>`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			work := 0
+			if err := s.auditOutput(context.Background(), []byte(output), map[string]struct{}{"pass4829": {}}, &work); err == nil {
+				t.Fatal("changed or cross-unit original component escaped the HTML residual audit")
+			}
+		})
+	}
+	work := 0
+	if err := s.auditOutput(context.Background(), []byte(`<p>prefixpa&amp;amp;ss4829Suffix</p>`), map[string]struct{}{"pa&ss4829": {}}, &work); err == nil {
+		t.Fatal("double-encoded source bytes authorized a residual component")
+	}
+}
+
+func TestResidualHTMLAuditChecksOverlappingPatternsIndependently(t *testing.T) {
+	d := &testDetector{secret: "never-present-sensitive-fixture", parts: map[string]string{"key": "never-present-sensitive-fixture"}}
+	s, _ := New([]detectors.Detector{d})
+	for _, output := range []string{
+		`<span>password</span>`,
+		`<span>prefixpass</span><span>wordSuffix</span>`,
+	} {
+		work := 0
+		if err := s.auditOutput(context.Background(), []byte(output), map[string]struct{}{"pass": {}, "password": {}}, &work); err == nil {
+			t.Fatal("an exempt shorter pattern hid a valid or cross-unit longer component")
+		}
+	}
+}
+
+func TestHTMLResidualProvenanceCannotUseIgnoredDuplicateContext(t *testing.T) {
+	const gate = "pairedAuditGateSensitiveValue"
+	const secret = "pass4829"
+	d := securityDetector{testDetector: &testDetector{secret: gate}, fromData: func(_ context.Context, data []byte) ([]detectors.Result, error) {
+		if !bytes.Contains(data, []byte(gate)) || !bytes.Contains(data, []byte(secret)) {
+			return nil, nil
+		}
+		return []detectors.Result{{DetectorType: detector_typepb.DetectorType_Test, SecretParts: map[string]string{"key": gate, "secret": secret}}}, nil
+	}}
+	s, _ := New([]detectors.Detector{d})
+	input := []byte(`<div>first="` + gate + `"; second="` + secret + `"</div><span class="prefixpass4829Suffix"></span><span>prefixpa</span><span>ss4829Suffix</span>`)
+	before := bytes.Clone(input)
+	output, _, err := s.Redact(context.Background(), input)
+	if err == nil || output != nil || !bytes.Equal(input, before) {
+		t.Fatal("an ignored duplicate identifier authorized a fragmented paired component after its detector was disabled")
+	}
+}
+
+func TestHTMLResidualProvenanceIsLazyAndKeepsDetectorViews(t *testing.T) {
+	d := &testDetector{secret: "never-present-sensitive-fixture", parts: map[string]string{"key": "never-present-sensitive-fixture"}}
+	s, _ := New([]detectors.Detector{d})
+	// More than the per-call provenance limit, but no original component is
+	// present. No source-unit proof should be built just to scan clean HTML.
+	work := 0
+	if err := s.auditOutput(context.Background(), []byte("<p>"+strings.Repeat("x ", 4097)+"</p>"), map[string]struct{}{"absentSensitiveValue": {}}, &work); err != nil {
+		t.Fatal("clean HTML unnecessarily built residual provenance")
+	}
+	seen := false
+	full := securityDetector{testDetector: &testDetector{secret: "pass4829"}, fromData: func(_ context.Context, data []byte) ([]detectors.Result, error) {
+		if string(data) != "prefixpass4829Suffix" {
+			return nil, nil
+		}
+		seen = true
+		return []detectors.Result{{DetectorType: detector_typepb.DetectorType_Test, SecretParts: map[string]string{"key": "newSensitiveCandidate"}}}, nil
+	}}
+	s, _ = New([]detectors.Detector{full})
+	work = 0
+	if err := s.auditOutput(context.Background(), []byte(`<p>prefixpass4829Suffix</p>`), map[string]struct{}{"pass4829": {}}, &work); err == nil || !seen {
+		t.Fatal("HTML residual provenance changed the full post-redaction detector view")
+	}
+}
