@@ -1,14 +1,14 @@
 # Maintaining the redaction fork
 
-Keep the fork's default branch as an upstream-compatible TruffleHog tree with a small, separately reviewed redaction layer. Preserve the upstream module path and detector registry. This lets the redactor use the current upstream detector implementations while keeping the source-editing policy in `pkg/redaction` and the pre-scan interface in `cmd/trufflehog-redact`.
+Keep the fork's default branch as an upstream-compatible TruffleHog tree with a small, separately reviewed redaction layer. Preserve the upstream module path and detector registry. This lets the redactor use the current upstream detector implementations while keeping source-editing policy in `pkg/redaction`, shared filesystem transactions in `internal/sourceredact`, and a small opt-in `--in-place` route in the existing TruffleHog CLI. `cmd/trufflehog-redact` remains a compatibility wrapper. Retain all upstream CLI declarations and ordinary scanning behavior; new redaction must not replace the normal command.
 
 The initial upstream baseline is commit `0e427395344c7039c0b15a1147f5782805685b3e` (2026-10-08). Record the tested upstream commit when publishing each redaction build. Pin the binary version used by the importing pipeline so an upstream update becomes a reviewed release rather than an unannounced production change.
 
 The published fork is [cxosmobb/trufflehog-with-inline-redact](https://github.com/cxosmobb/trufflehog-with-inline-redact).
-The 2026-10-23 update incorporates upstream `main` at
-`d6ea4a52e3f4705989210e60e9f0da0deafe84bf`. SonarQube and LambdaCloud raise the
-reviewed registry from the original 897 to 899 instances; the exact command corpus
-contains 900 files. The workflows select the latest Go patch in the release series
+The 2026-10-24 update incorporates upstream `main` at
+`31ce31ee1abbcc7dc8eee5764c17121c3044c8b2`. SonarQube, LambdaCloud, Fireworks and Infisical raise the
+reviewed registry from the original 897 to 901 instances; the exact command corpus
+contains 902 files. The workflows select the latest Go patch in the release series
 required by upstream's current `go.mod`.
 
 ## Compatibility checks
@@ -16,10 +16,12 @@ required by upstream's current `go.mod`.
 Run from the repository root:
 
 ```sh
+CGO_ENABLED=0 go build -p 2 -o /tmp/trufflehog .
 CGO_ENABLED=0 go build -p 2 -o /tmp/trufflehog-redact ./cmd/trufflehog-redact
-REDACTION_TEST_BINARY=/tmp/trufflehog-redact CGO_ENABLED=0 go test -p 2 -count=1 -timeout=15m ./pkg/redaction/... ./cmd/trufflehog-redact/...
-REDACTION_TEST_BINARY=/tmp/trufflehog-redact REDACTION_REQUIRE_IN_PLACE=1 CGO_ENABLED=0 go test -p 2 -count=1 -timeout=15m ./cmd/trufflehog-redact/... -run 'TestEveryDetectorRedactsInPlace|TestCommandRedactsDetectorCorpusInPlace|TestCommandInPlaceExactMultiFileFixtures'
+REDACTION_TEST_MAIN_BINARY=/tmp/trufflehog REDACTION_TEST_BINARY=/tmp/trufflehog-redact CGO_ENABLED=0 go test -p 2 -count=1 -timeout=30m ./pkg/redaction/... ./internal/sourceredact/... ./cmd/trufflehog-redact/...
+REDACTION_TEST_MAIN_BINARY=/tmp/trufflehog REDACTION_TEST_BINARY=/tmp/trufflehog-redact REDACTION_REQUIRE_IN_PLACE=1 CGO_ENABLED=0 go test -p 2 -count=1 -timeout=30m ./internal/sourceredact/... -run 'TestEveryDetectorRedactsInPlace|TestCommandRedactsDetectorCorpusInPlace|TestCommandInPlaceExactMultiFileFixtures'
 go test -p 2 -count=1 ./pkg/detectors/redaction_context.go ./pkg/detectors/redaction_context_test.go
+go test -p 2 -count=1 ./pkg/engine -run '^TestSelectDetectors'
 go test -p 2 -count=1 ./scripts/redaction-audit.go ./scripts/redaction-audit_test.go
 go run ./scripts/redaction-audit.go > /tmp/redaction-detector-schema.json
 cmp pkg/redaction/detector-schema.json /tmp/redaction-detector-schema.json
@@ -29,7 +31,7 @@ The explicit `REDACTION_REQUIRE_IN_PLACE=1` command requires supported Linux sto
 
 The detector inventory and behavioral tests serve different purposes. Tests in `pkg/redaction` compare the reviewed inventory with current production detector code and require policies for known secret-component keys. `scripts/redaction-audit.go` prints the current inventory for review; it does not approve or update the policy. Behavioral tests check that secret components become `REDACTED` and that unrelated identifiers, punctuation, whitespace, and surrounding source remain intact. The separate in-place corpus exercises real detector fixtures through source-file staging and replacement, and command fixtures run the executable against nested multi-file trees. An inventory count, a populated `SecretParts` map, or a passing source-stream test alone does not prove correct in-place redaction.
 
-`.github/workflows/redaction-test.yml` builds the production executable first and supplies it through `REDACTION_TEST_BINARY`, then runs the complete redaction suite on standard public Linux and Windows hosted runners. It clears the local detector filter and requires actual successful in-place edits on Linux and Windows. Windows must exercise the complete corpus with ordinary file permissions; its locked same-file writes retain original identity and security metadata without privileged descriptor copying. Both platforms test the inventory generator and compare its result with the reviewed snapshot. No detector policy or inventory is automatically accepted.
+`.github/workflows/redaction-test.yml` builds full TruffleHog and the compatibility wrapper first. It supplies `REDACTION_TEST_MAIN_BINARY` for native CLI and in-place corpus tests and `REDACTION_TEST_BINARY` for compatibility stream checks, then runs the complete redaction suite on standard public Linux and Windows hosted runners. It clears the local detector filter and requires actual successful in-place edits on Linux and Windows. Windows must exercise the complete corpus with ordinary file permissions; its locked same-file writes retain original identity and security metadata without privileged descriptor copying. Both platforms test the inventory generator and compare its result with the reviewed snapshot. No detector policy or inventory is automatically accepted. Native CLI regressions also require original source commands and flags in help, ordinary offline JSON findings without file changes, original-secret findings plus local filesystem redaction, no second-pass findings, reporting filters which do not suppress editing, and rejection of unsupported write targets. Test newly added upstream flags with redaction when they can affect scope or security.
 
 Every job that executes proposed source has read-only repository permissions, no persistent checkout credentials, no caches, and no provider secrets. Ordinary pull-request runs explicitly test the proposed head SHA; strict branch protection requires it to contain the current base. A separate default-branch workflow, `.github/workflows/redaction-status.yml`, handles `workflow_run` completion without checking out source or downloading artifacts. It verifies the originating workflow ID, file path, repository, event, exact head SHA, run attempt, and both matrix jobs before publishing `redaction-compatibility`. If either platform fails, times out, or is cancelled, the aggregate status cannot report success. Pull-request statuses apply only while an open pull request retains the tested head and that head contains its current base. When GitHub evaluates checks on a synthetic merge, the publisher also reports there after verifying that it is current and has exactly the tested head's tree. This publisher supports external-fork pull requests without granting write access to their source execution.
 
@@ -99,7 +101,10 @@ If `upstream` already exists, use that remote rather than adding it again. Resol
 
 The scheduled workflow takes action only when its repository variable is enabled. Repository setup, branch protection and the first cloud run must be verified when publishing this fork.
 
-Windows release smoke checks must run the packaged executable against a nested
+Windows ZIPs contain the full `trufflehog.exe` and compatibility wrapper. Release
+smoke checks must prove upstream command help and ordinary offline JSON scanning
+still work without changing source, then run `trufflehog filesystem --in-place`
+against a nested
 two-file NTFS directory, compare exact bytes, verify unchanged file identities
 and repeat the operation unchanged. They must never enable privileges to obtain
 a pass. Keep tests for hard-link, read-only, lock and partial-write rollback

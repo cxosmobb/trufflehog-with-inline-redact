@@ -1,6 +1,6 @@
 //go:build !linux && !windows
 
-package main
+package sourceredact
 
 import (
 	"errors"

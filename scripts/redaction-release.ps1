@@ -16,23 +16,26 @@ if (Test-Path -LiteralPath $resolvedOutput) { throw 'Output directory must not a
 $null = New-Item -ItemType Directory -Path $resolvedOutput
 $packageRoot = Join-Path $resolvedOutput 'package'
 $null = New-Item -ItemType Directory -Path $packageRoot
-$executable = Join-Path $packageRoot 'trufflehog-redact.exe'
+$executable = Join-Path $packageRoot 'trufflehog.exe'
+$wrapper = Join-Path $packageRoot 'trufflehog-redact.exe'
 Push-Location $sourceRoot
 try {
     $actualSha = (& git rev-parse HEAD).Trim()
     if ($LASTEXITCODE -ne 0 -or $actualSha -ne $SourceSha) { throw 'Source revision mismatch' }
     $env:GOOS = 'windows'
     $env:GOARCH = 'amd64'
-    & go build -mod=readonly -p 2 -trimpath -buildvcs=false '-ldflags=-s -w' -o $executable ./cmd/trufflehog-redact
-    if ($LASTEXITCODE -ne 0) { throw 'Windows release build failed' }
+    & go build -mod=readonly -p 2 -trimpath -buildvcs=false '-ldflags=-s -w' -o $executable .
+    if ($LASTEXITCODE -ne 0) { throw 'Full Windows TruffleHog build failed' }
+    & go build -mod=readonly -p 2 -trimpath -buildvcs=false '-ldflags=-s -w' -o $wrapper ./cmd/trufflehog-redact
+    if ($LASTEXITCODE -ne 0) { throw 'Windows compatibility wrapper build failed' }
     $goVersion = (& go version).Trim()
     if ($LASTEXITCODE -ne 0) { throw 'Cannot record Go version' }
 } finally {
     Pop-Location
 }
 
-function Invoke-Redactor([string]$InputText, [string[]]$Options = @()) {
-    $start = [Diagnostics.ProcessStartInfo]::new($executable)
+function Invoke-ReleaseCommand([string]$Program, [string]$InputText, [string[]]$Options = @()) {
+    $start = [Diagnostics.ProcessStartInfo]::new($Program)
     $start.UseShellExecute = $false
     $start.RedirectStandardInput = $true
     $start.RedirectStandardOutput = $true
@@ -60,20 +63,40 @@ function Invoke-Redactor([string]$InputText, [string[]]$Options = @()) {
     }
 }
 
-# Deterministic synthetic credentials only; never print source or captured output.
-$source = 'const githubToken = "ghp_abcdefghijklmnopqrstuvwxyz0123456789"; // preserve' + "`r`n"
-$expected = 'const githubToken = "REDACTED"; // preserve' + "`r`n"
-foreach ($inputText in @($source, $expected)) {
-    $result = Invoke-Redactor $inputText
-    if ($result.Output -cne $expected -or $result.Diagnostics.Length -ne 0) {
-        throw 'Windows executable failed exact redaction or second-pass idempotence'
+function Read-ReleaseFindings([string]$OutputText) {
+    try {
+        foreach ($line in ($OutputText -split '\r?\n')) {
+            if (-not [string]::IsNullOrWhiteSpace($line)) { ConvertFrom-Json -InputObject $line }
+        }
+    } catch {
+        throw 'Full TruffleHog did not produce valid JSON findings'
     }
 }
-$helpResult = Invoke-Redactor '' @('--help')
-if ($helpResult.Output.Length -ne 0 -or -not $helpResult.Diagnostics.Contains('--in-place')) {
-    # Go flag help uses one leading dash even when both spellings are accepted.
-    if ($helpResult.Output.Length -ne 0 -or -not $helpResult.Diagnostics.Contains('-in-place')) {
-        throw 'Windows executable did not provide command help'
+
+# Deterministic synthetic credentials only; never print source or captured output.
+# Synthetic: ghp_ + first36hex(SHA256("trufflehog-native-inline-redaction-synthetic-fixture")).
+$secret = 'ghp_732e944dd9bca8079d5304a4d30f05e15e24'
+$source = 'const githubToken = "' + $secret + '"; // preserve' + "`r`n"
+$expected = 'const githubToken = "REDACTED"; // preserve' + "`r`n"
+foreach ($inputText in @($source, $expected)) {
+    $result = Invoke-ReleaseCommand $wrapper $inputText
+    if ($result.Output -cne $expected -or $result.Diagnostics.Length -ne 0) {
+        throw 'Windows compatibility wrapper failed exact redaction or second-pass idempotence'
+    }
+}
+$helpResult = Invoke-ReleaseCommand $wrapper '' @('--help')
+if (($helpResult.Output + $helpResult.Diagnostics) -notmatch '--?in-place') {
+    throw 'Windows compatibility wrapper did not provide command help'
+}
+$helpResult = Invoke-ReleaseCommand $executable '' @('--help')
+$helpText = ($helpResult.Output + $helpResult.Diagnostics).Replace('--[no-]', '--')
+foreach ($option in @('--json', '--no-verification', '--in-place', 'filesystem', 'github', 'git', 's3')) {
+    if (-not $helpText.Contains($option)) { throw 'Full TruffleHog help lost an original command or expected flag' }
+}
+foreach ($entry in @(@('git', '--since-commit'), @('filesystem', '--include-paths'))) {
+    $helpResult = Invoke-ReleaseCommand $executable '' @($entry[0], '--help')
+    if (-not ($helpResult.Output + $helpResult.Diagnostics).Contains($entry[1])) {
+        throw 'Full TruffleHog source command help lost an original flag'
     }
 }
 
@@ -113,22 +136,37 @@ try {
     [IO.File]::WriteAllText($second, $source.Replace('// preserve', '// nested'), $encoding)
     $identities = @{}
     foreach ($path in @($first, $second)) { $identities[$path] = [InlineRedactorReleaseIdentity]::Read($path) }
+    $ordinary = Invoke-ReleaseCommand $executable '' @('--no-update', '--no-verification', '--log-level=-1', '--json', '--include-detectors=Github', 'filesystem', $smokeRoot)
+    $findings = @(Read-ReleaseFindings $ordinary.Output)
+    if (@($findings | Where-Object { $_.DetectorName -eq 'Github' -and $_.Raw -eq $secret }).Count -lt 1) {
+        throw 'Full TruffleHog did not retain ordinary offline JSON findings'
+    }
+    foreach ($path in @($first, $second)) {
+        $wanted = if ($path -eq $first) { $source } else { $source.Replace('// preserve', '// nested') }
+        if ([Convert]::ToBase64String([IO.File]::ReadAllBytes($path)) -cne [Convert]::ToBase64String($encoding.GetBytes($wanted))) {
+            throw 'Ordinary TruffleHog scanning unexpectedly changed source'
+        }
+    }
     foreach ($pass in 1..2) {
-        $result = Invoke-Redactor '' @('--in-place', $smokeRoot)
-        if ($result.Output.Length -ne 0 -or $result.Diagnostics.Length -ne 0) {
-            throw 'Windows in-place smoke test produced unexpected output'
+        $result = Invoke-ReleaseCommand $executable '' @('--no-update', '--no-verification', '--log-level=-1', '--json', 'filesystem', '--in-place', $smokeRoot)
+        $findings = @(Read-ReleaseFindings $result.Output)
+        if ($pass -eq 1 -and @($findings | Where-Object { $_.DetectorName -eq 'Github' -and $_.Raw -eq $secret }).Count -lt 1) {
+            throw 'Native Windows in-place scan did not retain original JSON findings'
+        }
+        if ($pass -eq 2 -and $findings.Count -ne 0) {
+            throw 'Native Windows in-place second pass reported residual findings'
         }
         foreach ($path in @($first, $second)) {
             $wanted = if ($path -eq $first) { $expected } else { $expected.Replace('// preserve', '// nested') }
             if ([Convert]::ToBase64String([IO.File]::ReadAllBytes($path)) -cne [Convert]::ToBase64String($encoding.GetBytes($wanted))) {
-                throw 'Windows in-place smoke test changed unrelated source or missed a credential'
+                throw 'Native Windows in-place smoke test changed unrelated source or missed a credential'
             }
             if ([InlineRedactorReleaseIdentity]::Read($path) -cne $identities[$path]) {
-                throw 'Windows in-place smoke test replaced the original file object'
+                throw 'Native Windows in-place smoke test replaced the original file object'
             }
         }
         if (@(Get-ChildItem -LiteralPath $smokeRoot -Recurse -Filter '.trufflehog-redact-*' -Force).Count -ne 0) {
-            throw 'Windows in-place smoke test left staging files'
+            throw 'Native Windows in-place smoke test left staging files'
         }
     }
 } finally {
@@ -140,20 +178,30 @@ try {
 
 Copy-Item -LiteralPath (Join-Path $sourceRoot 'LICENSE') -Destination (Join-Path $packageRoot 'LICENSE')
 $usage = @"
-TruffleHog inline source redactor for Windows x64
+TruffleHog with inline source redaction for Windows x64
 Source commit: $SourceSha
 
-This executable replaces detected sensitive source strings with REDACTED.
-It scans offline, including expired and unverified candidates. Public IDs and
-surrounding source are preserved. Always check its exit code before allowing a
-downstream scanner to access the processed files.
+trufflehog.exe retains the original TruffleHog commands, flags and output formats.
+Without --in-place, it performs ordinary TruffleHog scanning. Add --in-place to
+filesystem scans to replace detected sensitive source strings with REDACTED.
+The normal scan prints its original findings before redaction; protect that
+output because it can contain credentials. Use --no-verification for an offline
+scan. The separate redaction pass is always offline and includes expired and
+unverified candidates, regardless of reporting filters. Public IDs and source
+surroundings are preserved. Check the exit code before downstream access.
 
 PowerShell, from this extracted folder:
-  .\trufflehog-redact.exe --help
-  .\trufflehog-redact.exe --in-place C:\path\to\private-import
+  .\trufflehog.exe --help
+  .\trufflehog.exe --no-update --no-verification filesystem --in-place C:\path\to\private-import
   if (`$LASTEXITCODE -ne 0) { throw 'Redaction failed; do not scan the import' }
 
-One stream (cmd.exe preserves stdin/stdout bytes):
+Ordinary scan, preserving upstream JSON output and leaving files unchanged:
+  .\trufflehog.exe --no-update --no-verification --json filesystem C:\path\to\source
+
+For a local repository, pass its working-tree folder to filesystem --in-place.
+Remote sources and historical commits cannot be rewritten with --in-place.
+The companion trufflehog-redact.exe remains available for compatibility and
+buffered stream redaction (cmd.exe preserves stdin/stdout bytes):
   trufflehog-redact.exe < original.go > redacted.go
   if errorlevel 1 exit /b 1
 
@@ -168,25 +216,25 @@ downstream scanner unless redaction succeeds; keep the import private until then
 
 ZIP checksum: verify SHA256SUMS from the same GitHub Release before use.
 PowerShell: Get-FileHash .\trufflehog-redact-windows-amd64-$SourceSha.zip -Algorithm SHA256
-Builds are unsigned. Only file contents are scanned, not metadata or Git history.
+Builds are unsigned. Only file contents are redacted, not metadata or Git history.
 Archives and containers must be extracted first. Detection is not a guarantee
-that every possible secret is recognized. Ambiguous mappings withhold output.
+that every possible secret is recognized. Ambiguous mappings block source edits.
 
 Full usage and limitations:
 https://github.com/cxosmobb/trufflehog-with-inline-redact/blob/$SourceSha/docs/source-redaction.md
 "@
-$encoding = [Text.UTF8Encoding]::new($false)
 [IO.File]::WriteAllText((Join-Path $packageRoot 'README.txt'), $usage + "`n", $encoding)
-$metadata = "Source commit: $SourceSha`nToolchain: $goVersion`nTarget: windows/amd64`nCGO_ENABLED: 0`nSmoke tests: exact source redaction; idempotence; help; two-file in-place directory; original file identities`n"
+$metadata = "Source commit: $SourceSha`nToolchain: $goVersion`nTarget: windows/amd64`nCGO_ENABLED: 0`nSmoke tests: upstream command help; ordinary offline JSON detection without source edits; native in-place original JSON findings; directory edits; idempotence; original file identities; compatibility stream redaction`n"
 [IO.File]::WriteAllText((Join-Path $packageRoot 'BUILD.txt'), $metadata, $encoding)
 $assetName = "trufflehog-redact-windows-amd64-$SourceSha.zip"
 $assetPath = Join-Path $resolvedOutput $assetName
 Compress-Archive -LiteralPath @(
     $executable,
+    $wrapper,
     (Join-Path $packageRoot 'LICENSE'),
     (Join-Path $packageRoot 'README.txt'),
     (Join-Path $packageRoot 'BUILD.txt')
 ) -DestinationPath $assetPath -CompressionLevel Optimal
 $hash = (Get-FileHash -LiteralPath $assetPath -Algorithm SHA256).Hash.ToLowerInvariant()
 [IO.File]::WriteAllText((Join-Path $resolvedOutput 'SHA256SUMS'), "$hash  $assetName`n", [Text.ASCIIEncoding]::new())
-Write-Output 'Windows x64 release build, exact stream and in-place directory redaction, idempotence, file identity, and help checks passed.'
+Write-Output 'Windows full TruffleHog and wrapper builds, ordinary scanning, native in-place directory redaction, idempotence, file identity, stream redaction and help checks passed.'

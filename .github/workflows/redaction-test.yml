@@ -73,15 +73,19 @@ jobs:
           go-version: ${{ steps.go-version.outputs.version }}
           check-latest: true
           cache: false
-      - name: Build the production pre-scan command before testing
+      - name: Build full TruffleHog and the compatibility wrapper before testing
         run: |
           set -euo pipefail
-          binary="$RUNNER_TEMP/trufflehog-redact"
+          binary="$RUNNER_TEMP/trufflehog"
+          wrapper="$RUNNER_TEMP/trufflehog-redact"
           if [[ "$RUNNER_OS" == Windows ]]; then
             binary="$binary.exe"
+            wrapper="$wrapper.exe"
           fi
-          go build -p 2 -o "$binary" ./cmd/trufflehog-redact
-          echo "REDACTION_TEST_BINARY=$binary" >> "$GITHUB_ENV"
+          go build -p 2 -o "$binary" .
+          go build -p 2 -o "$wrapper" ./cmd/trufflehog-redact
+          echo "REDACTION_TEST_MAIN_BINARY=$binary" >> "$GITHUB_ENV"
+          echo "REDACTION_TEST_BINARY=$wrapper" >> "$GITHUB_ENV"
       - name: Test every detector contract, exact redaction, and the production command
         env:
           REDACTION_TEST_DETECTORS: ''
@@ -89,9 +93,11 @@ jobs:
           REDACTION_REQUIRE_IN_PLACE: '1'
         run: |
           set -euo pipefail
+          test -n "$REDACTION_TEST_MAIN_BINARY"
           test -n "$REDACTION_TEST_BINARY"
-          go test -p 2 -count=1 -timeout=30m ./pkg/redaction/... ./cmd/trufflehog-redact/...
+          go test -p 2 -count=1 -timeout=30m ./pkg/redaction/... ./internal/sourceredact/... ./cmd/trufflehog-redact/...
           go test -p 2 -count=1 ./pkg/detectors/redaction_context.go ./pkg/detectors/redaction_context_test.go
+          go test -p 2 -count=1 ./pkg/engine -run '^TestSelectDetectors'
       - name: Test and review the current static detector inventory
         run: |
           set -euo pipefail

@@ -1,6 +1,6 @@
 # Source-redaction security review
 
-Reviewed on 2026-10-08, 2026-10-19, and 2026-10-23. The review covers the fork additions and their interaction
+Reviewed on 2026-10-08, 2026-10-19, 2026-10-23, and 2026-10-24. The review covers the fork additions and their interaction
 with the original detector results, decoders, filesystem command, and update CI.
 Reproductions use synthetic local credentials; verification remains disabled.
 
@@ -75,16 +75,40 @@ are not crash-atomic. Rollback covers controlled failures, not every operating
 system or storage failure. The importing pipeline must keep the tree private
 and require exit status zero before exposing it downstream.
 
+## Native CLI integration
+
+Full TruffleHog retains its upstream commands, flags and normal scanner path.
+`--in-place` opts local filesystem inputs into the same bounded source-editing
+implementation used by the compatibility wrapper. It runs the ordinary scanner
+against the original source, prints its normal findings, then commits redaction.
+The preceding scan preserves verification, output, result filters, profiling and
+comparison semantics; importing pipelines should use `--no-verification` to
+prevent provider checks. Its printed findings can contain original credentials,
+as explicitly requested, so stdout and other normal output channels must remain
+trusted. The separate source-editing pass always disables verification and ignores
+reporting filters. Self-updates are skipped during editing to retain the fork's
+redaction implementation. Remote sources and Git history cannot be edited.
+Detector and path selections bound what is redacted, so importing pipelines
+must avoid exclusions which hide secrets from their selected scope.
+
+Release smoke tests capture ordinary JSON findings without printing them and
+verify the source remains byte-for-byte unchanged. Native in-place tests require
+original-secret JSON findings, exact edits, second-pass absence of findings,
+idempotence and preserved Windows file identity. Both native and
+wrapper executables are bound to the same reviewed source revision and archive
+allowlist; the isolated publisher validates both x64 executable headers without
+running them or checking out repository code.
+
 ## Validation
 
-The current corpus requires positive coverage for **899/899 registered scanner
+The current corpus requires positive coverage for **901/901 registered scanner
 instances**, with no detection or mapping gaps. This is one positive fixture per
 scanner, supplemented by exact-source, structured-credential, encoding,
 idempotence, failure, cancellation, resource-budget and confidentiality tests.
 
 Linux validation requires actual in-place writes and a second unchanged pass for
-all 899 scanner samples. The full production-registry command exercises a nested
-900-file tree on two runs. Fifteen separate fixtures specify exact expected
+all 901 scanner samples. The full production-registry command exercises a nested
+902-file tree on two runs. Fifteen separate fixtures specify exact expected
 source bytes independently; connection-parse failure and Box ambiguity
 regressions preserve their entire original batches. Linux ownership, extended
 attribute and POSIX ACL tests run on native Linux storage. Compatibility CI
@@ -92,9 +116,10 @@ records the passing results for each published revision.
 
 Windows compatibility requires the actual in-place corpus, exact command fixtures
 and second unchanged pass on NTFS without privileged descriptor copying. The
-release build separately requires the packaged executable to edit two nested
-files, preserve their identities and pass again unchanged, alongside exact
-UTF-8/CRLF source-stream and help checks. Audit-SACL fixture creation can require
+release build separately requires packaged full TruffleHog to preserve ordinary
+offline JSON findings and upstream command help, then edit two nested files via
+`filesystem --in-place`, preserve their identities and pass again unchanged.
+The compatibility wrapper also passes exact UTF-8/CRLF source-stream checks. Audit-SACL fixture creation can require
 privileged test setup; that optional fixture cannot replace ordinary successful
 in-place tests. Linux metadata tests execute on native Linux storage. The decoder
 and GCP upstream unit suites, static-audit and context tests, workflow lint, and
@@ -118,7 +143,7 @@ reusing results from the earlier privilege-dependent implementation.
   termination; Linux individual renames remain atomic.
 - Only file contents are redacted. Git history, filenames, alternate data
   streams, extended attributes and other metadata can retain credentials.
-- The positive corpus covers the 899 registered scanner instances. Twenty-six
+- The positive corpus covers the 901 registered scanner instances. Twenty-six
   intentionally disabled upstream implementations remain outside this command.
   Ambiguous Box OAuth layouts can be refused when a retained public identifier
   becomes a new post-edit candidate; the original batch remains untouched.

@@ -1,58 +1,102 @@
 # Original-source redaction
 
-This fork adds `trufflehog-redact`, an offline preprocessing command that changes
-the **original input source bytes**, replacing sensitive credential components
-with `REDACTED`. It does not redact TruffleHog's printed findings. Public IDs,
+This fork keeps the complete `trufflehog` command and adds `--in-place` for local
+filesystem scans. Existing commands, flags, output formats and normal scanning
+behavior remain available. With `--in-place`, TruffleHog scans the originals and
+prints its normal findings, then changes the **original input source bytes**,
+replacing sensitive credential components with
+`REDACTED`. It does not redact TruffleHog's printed findings. Public IDs,
 usernames, hosts, formatting, comments, and unrelated source bytes are retained.
 
-Build the companion command from the fork:
+Build full TruffleHog from the fork:
 
 ```sh
-go build -o trufflehog-redact ./cmd/trufflehog-redact
+go build -o trufflehog .
 ```
 
 To overwrite an imported source tree before running a downstream scanner:
 
 ```sh
-./trufflehog-redact --in-place ./imported-source && untrusted-scanner ./imported-source
+./trufflehog --no-update --no-verification filesystem --in-place ./imported-source && untrusted-scanner ./imported-source
 ```
 
-For one source stream, output is buffered until the scan succeeds:
+For a repository, pass the checked-out working-tree folder to `filesystem`.
+`--in-place` does not rewrite remote sources, Git history, or historical scan
+results. Other source commands continue to scan normally without this flag.
+An ordinary scan retains upstream findings and leaves source unchanged:
 
 ```sh
+./trufflehog --no-update --no-verification --json filesystem ./source
+```
+
+The `trufflehog-redact` companion remains as a compatibility wrapper around the
+same source-redaction implementation. Build it for buffered stream redaction:
+
+```sh
+go build -o trufflehog-redact ./cmd/trufflehog-redact
 ./trufflehog-redact < original.go > redacted.go && untrusted-scanner redacted.go
 ```
 
-Only start the downstream scanner on exit status zero. A failed scan produces
-no source on stdout. Shell redirection may still create an empty output file.
-Do not connect this command to a streaming consumer which treats partial or
-empty input as successful; check its exit code first.
+Only start the downstream scanner on exit status zero. Native `--in-place`
+prints findings about the original source using normal output flags, including
+raw credentials where the selected format ordinarily includes them. Protect
+that output and require a successful exit even if findings were already printed.
+For the compatibility stream wrapper, failures produce no source on stdout;
+shell redirection can still create an empty output file. Buffer the complete
+result and check success before giving it to a downstream consumer.
 
-All detected candidates are replaced, including expired and unverified secrets.
-Credential verification is disabled, so the command does not deliberately send
-credentials to provider APIs. Pattern matches can be false positives; this mode
-cannot prove that every candidate is live. Detector keyword prefilters match
-TruffleHog's normal scanning semantics, while output filters, ignore comments,
-entropy filters, and deduplication are bypassed. Multiple occurrences of a
-sensitive value are replaced.
+All detected candidates in the selected scope are redacted, including expired
+and unverified secrets. The source-editing pass always disables credential
+verification. Native TruffleHog's preceding ordinary scan retains its normal
+verification behavior: use `--no-verification` to prevent provider API checks.
+Pattern matches can be false positives; offline detection cannot prove whether
+a candidate is live. Multiple occurrences of a sensitive value are replaced.
+
+Normal output-format flags, `--results`, entropy filters, ignore comments and
+deduplication still govern printed findings. They do not suppress edits in the
+separate source-redaction pass. Detector keyword prefilters retain upstream
+semantics. A successful command with `--fail` can return the upstream findings
+status 183; omit it when the importing pipeline requires exit status zero.
+Requested profiling and detection-strategy comparison retain ordinary behavior.
+Self-update checks are skipped during in-place editing so the running fork
+cannot replace itself with an upstream binary lacking the redaction feature.
+
+Native detector include/exclude flags and custom configured detectors define
+which credential types are scanned. Configured detectors must produce auditable
+sensitive components; an unmappable match refuses the entire batch. Configured
+sources are rejected because in-place targets must be explicit local paths.
+Configuration and path-filter files are limited to 1 MiB each; each include or
+exclude file can contain at most 1,024 regular expressions. Nonzero symlink
+following is unavailable in in-place mode; symbolic edit targets are rejected.
+Combining `--output-report` with `--in-place` is rejected without opening or
+truncating its destination. These restrictions affect the new editing
+mode; ordinary upstream scans retain those features.
+
+`--in-place=false` and `--no-in-place` disable editing and select ordinary scan
+behavior. The new boolean's explicit assignment syntax also works in `@file`
+argument files. Argument-file expansion is bounded to eight nesting levels,
+1 MiB total data, 10,000 expanded arguments and 64 KiB per line; exceeding these
+limits fails before source edits.
 
 Additional credential components are requested through a redaction-only context;
 ordinary TruffleHog findings retain their original component fields. Detector
-context logs are discarded, and recovered detector/decoder panics withhold
-output without printing their payloads.
+context logs are discarded in the editing pass, and recovered detector/decoder
+panics block source edits without printing their payloads. Ordinary findings
+may already have been printed before a redaction failure.
 
 ## Windows release ZIPs
 
 Download the Windows x64 ZIP and `SHA256SUMS` from this fork's
 [Releases](https://github.com/cxosmobb/trufflehog-with-inline-redact/releases).
 Verify the ZIP's SHA-256 digest against the manifest, then extract it. Each ZIP
-contains `trufflehog-redact.exe`, the license, usage instructions, and the exact
-source commit/toolchain in `BUILD.txt`. Builds are unsigned.
+contains full `trufflehog.exe`, the `trufflehog-redact.exe` compatibility wrapper,
+the license, usage instructions, and exact source commit/toolchain in
+`BUILD.txt`. Builds are unsigned.
 
 ```powershell
 Get-FileHash .\trufflehog-redact-windows-amd64-<commit>.zip -Algorithm SHA256
-.\trufflehog-redact.exe --help
-.\trufflehog-redact.exe --in-place C:\path\to\private-import
+.\trufflehog.exe --help
+.\trufflehog.exe --no-update --no-verification filesystem --in-place C:\path\to\private-import
 if ($LASTEXITCODE -ne 0) { throw 'Redaction failed; do not run the downstream scanner' }
 ```
 
@@ -69,9 +113,13 @@ The release workflow runs on standard free public GitHub-hosted runners. It
 publishes only the current default-branch revision after independently verifying
 a successful Linux/Windows compatibility matrix and its required status. A
 read-only Windows job builds with the latest Go patch in the release series
-required by `go.mod`, runs the actual executable through exact source redaction,
-second-pass idempotence, help and two-file directory in-place checks, then creates the ZIP. The directory checks also require original file identities to survive both passes. An isolated
-publisher validates the archive and checksum without executing repository code
+required by `go.mod`, builds both executables and checks original command help,
+ordinary offline JSON findings without source changes, exact compatibility
+stream redaction and native two-file directory in-place edits. Native JSON
+findings must describe the original secret on the first pass and contain no
+findings on the second. The directory checks also require exact edited bytes,
+second-pass idempotence and unchanged original file identities.
+An isolated publisher validates the archive and checksum without executing repository code
 or the executable. Release tags are `redact-<12-character-source-commit>`.
 
 Hourly checks and compatibility completion events detect newly validated source.
@@ -101,9 +149,9 @@ and may make a credential unusable or violate a schema; source parsing and
 application execution are not guaranteed after replacing credential values.
 
 TruffleHog's current decoder outputs are also audited. A finding from a lossy or
-new decoder which cannot be mapped precisely blocks source output. Unknown
-credential component names, unmatched sensitive values, conflicting encoded
-edits, detector errors, cancellation, and limits also block output. Nested
+new decoder which cannot be mapped precisely blocks edited-source output or
+in-place commit. Unknown credential component names, unmatched sensitive values,
+conflicting encoded edits, detector errors, cancellation, and limits do likewise. Nested
 encodings have a bounded mapping depth. Archives, compressed files, and PDFs
 must be extracted into source files before running this command.
 Detector and upstream decoder calls use TruffleHog's 10 KiB source chunks with
@@ -113,8 +161,12 @@ occurrence of components found in those chunks.
 
 ## In-place batches
 
-`--in-place` accepts files and directories. It scans every regular file without
-extension-based exclusions. Git metadata directories named `.git` are excluded;
+`trufflehog filesystem --in-place` accepts files and directories, including
+the existing `--directory` spelling. It honors detector selection, configuration
+and filesystem include/exclude path filters; excluded files or detector types
+remain outside the redaction scope. Without path filters, it scans every regular
+file without extension-based exclusions. The compatibility wrapper retains its
+`trufflehog-redact --in-place PATH` syntax. Git metadata directories named `.git` are excluded;
 this command does not rewrite repository history. Symlinks, special files, and
 unreadable files are rejected. Use an exclusively owned, private imported tree
 and exclude concurrent writers until the downstream scanner has finished.
@@ -155,8 +207,11 @@ file contents; preserving security metadata does not sanitize that metadata.
 The default limits are 16 MiB per input, 256 MiB total per in-place batch,
 10,000 files, 10,000 directories, a directory depth of 128, and
 a five-minute time budget checked during scanning and commit. Input reads and
-individual detector calls can block until they return. Use `--max-bytes`, `--max-total-bytes`, and `--timeout`
-to adjust them; `--max-files` controls both the file and directory count.
+individual detector calls can block until they return. Full TruffleHog exposes
+`--redaction-max-bytes`, `--redaction-max-total-bytes`, `--redaction-max-files`
+and `--redaction-timeout`; the file limit also controls directory count.
+The compatibility wrapper retains `--max-bytes`, `--max-total-bytes`,
+`--max-files` and `--timeout`.
 Limit overruns fail rather than skipping files. Fixed library budgets additionally
 cap decoded views (32 MiB each, 128 MiB total), provenance, findings, source edits,
 residual-match patterns, and detector work. Increasing CLI limits does not disable
@@ -166,12 +221,12 @@ ignores cancellation; use process-level resource limits for hostile imports.
 ## Coverage and updates
 
 The public fork is [cxosmobb/trufflehog-with-inline-redact](https://github.com/cxosmobb/trufflehog-with-inline-redact).
-The current reviewed upstream revision is `d6ea4a52e3f4705989210e60e9f0da0deafe84bf`
-from upstream `main` on 2026-10-23. SonarQube and LambdaCloud raise the original
-897-instance baseline to 899 registered scanner instances, using the same
+The current reviewed upstream revision is `31ce31ee1abbcc7dc8eee5764c17121c3044c8b2`
+from upstream `main` on 2026-10-24. SonarQube, LambdaCloud, Fireworks and Infisical
+raise the original 897-instance baseline to 901 registered scanner instances, using the same
 source-redaction policy and mandatory coverage gates.
 
-The full-registry directory batch contains **900 files**. The complete Linux
+The full-registry directory batch contains **902 files**. The complete Linux
 suite requires actual file replacement and a second unchanged pass for every
 scanner and the production command. Fifteen additional fixtures specify exact
 output bytes independently, including structured duplicates and supported
@@ -179,7 +234,7 @@ encodings. The engine/security/schema suite and registry-completeness audit are
 also required. See the compatibility workflow for results for each commit.
 Windows CI also requires actual unprivileged in-place edits for the complete corpus. Security tests cover unchanged file identity, ACLs and refusal of unsafe file aliases.
 
-The current baseline has **899/899 registered scanner instances** with a positive
+The current baseline has **901/901 registered scanner instances** with a positive
 offline redaction fixture, with zero detection or mapping gaps. This includes
 scanner versions and feature-gated implementations, plus the upstream registry's
 known Guru and Tru omissions. A registry-completeness test compares the redaction
@@ -211,13 +266,14 @@ and preservation of ordinary scanner component fields.
 Every exact copy of a known sensitive value is treated as sensitive, including
 copies in comments. If a retained substring or an encoded copy makes it
 impossible to prove the component is gone without altering unrelated source,
-the command withholds output. Ambiguous upstream multipart roles can also
+the command refuses edited-source output or in-place commit. Ambiguous
+upstream multipart roles can also
 produce false positives; offline scanning cannot establish provider validity.
 
 Run the exact scanner corpus and source-edit regression suite:
 
 ```sh
-go test -p 2 -count=1 ./pkg/redaction/... ./cmd/trufflehog-redact/...
+go test -p 2 -count=1 ./pkg/redaction/... ./internal/sourceredact/... ./cmd/trufflehog-redact/...
 ```
 
 The corpus tests invoke actual compiled detector instances with verification
@@ -239,12 +295,14 @@ redactor does not erase the public ID to force the batch to succeed.
 Require actual in-place execution on a supported filesystem:
 
 ```sh
-REDACTION_REQUIRE_IN_PLACE=1 go test -p 2 -count=1 -timeout=15m ./cmd/trufflehog-redact/... -run 'TestEveryDetectorRedactsInPlace|TestCommandRedactsDetectorCorpusInPlace|TestCommandInPlaceExactMultiFileFixtures'
+REDACTION_REQUIRE_IN_PLACE=1 go test -p 2 -count=1 -timeout=30m ./internal/sourceredact/... -run 'TestEveryDetectorRedactsInPlace|TestCommandRedactsDetectorCorpusInPlace|TestCommandInPlaceExactMultiFileFixtures'
 ```
 
-Set `REDACTION_TEST_BINARY` to the absolute path of a built production command to
-run command fixtures against that binary. Otherwise they exercise `main` in a
-test subprocess. Linux and Windows CI require successful in-place edits on supported storage.
+Set `REDACTION_TEST_MAIN_BINARY` to the absolute path of full TruffleHog to run
+the production in-place command corpus through `filesystem --in-place`.
+Set `REDACTION_TEST_BINARY` to the compatibility wrapper for stream checks.
+Linux and Windows CI build both, require ordinary scanning regressions and
+successful native in-place edits on supported storage.
 Required coverage also rejects short mode and a nonempty
 `REDACTION_TEST_DETECTORS` filter. A skipped platform test is not a successful
 in-place test.
