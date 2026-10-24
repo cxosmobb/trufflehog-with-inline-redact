@@ -23,6 +23,8 @@ import (
 const (
 	wrongSecretsRevision = "1b51b6fbcaaba5fd69389d551d2f41ec922a4135"
 	wrongSecretsDigest   = "b703b6a722db74ae007746f022bf90f5f7825e8f6cee33bd60e27ddbc206d7c5"
+	// Independent component/byte review approves exactly 19 changed files.
+	wrongSecretsRedactedDigest = "c755048a486caf1797d8559d59b6ff80b15ef5f43c537ec9c13547d8fbc9aec5"
 )
 
 type wrongSecretsFile struct {
@@ -57,6 +59,9 @@ func TestWrongSecretsRepositoryInPlace(t *testing.T) {
 		t.Fatal("in-place output did not preserve the original native findings")
 	}
 	redacted := wrongSecretsSnapshot(t, dir, "")
+	if wrongSecretsManifestDigest(redacted) != wrongSecretsRedactedDigest {
+		t.Fatal("redacted source differs from the independently reviewed complete output")
+	}
 	if publicHTML, exists := original["chatgpt_dump.html"]; !exists || redacted["chatgpt_dump.html"].hash != publicHTML.hash {
 		t.Fatal("source redaction changed public HTML nonces or script data")
 	}

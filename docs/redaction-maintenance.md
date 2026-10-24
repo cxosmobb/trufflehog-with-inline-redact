@@ -251,3 +251,11 @@ component fields and verification behavior. Synthetic mixed-source tests require
 real Tru candidates to be redacted while public HTML remains byte exact; the
 pinned WrongSecrets integration also requires its entire `chatgpt_dump.html`
 file to remain unchanged. CI runs the complete Tru detector unit package.
+
+The pinned integration also checks the complete expected output digest
+`c755048a486caf1797d8559d59b6ff80b15ef5f43c537ec9c13547d8fbc9aec5`:
+19 files with independently reviewed credential edits and 950 byte-exact
+original files. This catches future over-redaction anywhere in the fixture.
+Change this golden
+digest only after reviewing every changed source span and its credential role;
+a zero-findings rescan alone is insufficient justification.
