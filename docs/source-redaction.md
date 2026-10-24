@@ -221,12 +221,12 @@ ignores cancellation; use process-level resource limits for hostile imports.
 ## Coverage and updates
 
 The public fork is [cxosmobb/trufflehog-with-inline-redact](https://github.com/cxosmobb/trufflehog-with-inline-redact).
-The current reviewed upstream revision is `d6ea4a52e3f4705989210e60e9f0da0deafe84bf`
-from upstream `main` on 2026-10-23. SonarQube and LambdaCloud raise the original
-897-instance baseline to 899 registered scanner instances, using the same
+The current reviewed upstream revision is `31ce31ee1abbcc7dc8eee5764c17121c3044c8b2`
+from upstream `main` on 2026-10-24. SonarQube, LambdaCloud, Fireworks and Infisical
+raise the original 897-instance baseline to 901 registered scanner instances, using the same
 source-redaction policy and mandatory coverage gates.
 
-The full-registry directory batch contains **900 files**. The complete Linux
+The full-registry directory batch contains **902 files**. The complete Linux
 suite requires actual file replacement and a second unchanged pass for every
 scanner and the production command. Fifteen additional fixtures specify exact
 output bytes independently, including structured duplicates and supported
@@ -234,7 +234,7 @@ encodings. The engine/security/schema suite and registry-completeness audit are
 also required. See the compatibility workflow for results for each commit.
 Windows CI also requires actual unprivileged in-place edits for the complete corpus. Security tests cover unchanged file identity, ACLs and refusal of unsafe file aliases.
 
-The current baseline has **899/899 registered scanner instances** with a positive
+The current baseline has **901/901 registered scanner instances** with a positive
 offline redaction fixture, with zero detection or mapping gaps. This includes
 scanner versions and feature-gated implementations, plus the upstream registry's
 known Guru and Tru omissions. A registry-completeness test compares the redaction

@@ -19,7 +19,8 @@ import (
 	"time"
 )
 
-const nativeTestSecret = "ghp_abcdefghijklmnopqrstuvwxyz0123456789"
+// Synthetic: ghp_ + first36hex(SHA256("trufflehog-native-inline-redaction-synthetic-fixture")).
+const nativeTestSecret = "ghp_732e944dd9bca8079d5304a4d30f05e15e24"
 const nativeTestSource = "const token = '" + nativeTestSecret + "'; // preserve source\r\n"
 
 func nativeBinary(t *testing.T) string {

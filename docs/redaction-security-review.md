@@ -1,6 +1,6 @@
 # Source-redaction security review
 
-Reviewed on 2026-10-08, 2026-10-19, and 2026-10-23. The review covers the fork additions and their interaction
+Reviewed on 2026-10-08, 2026-10-19, 2026-10-23, and 2026-10-24. The review covers the fork additions and their interaction
 with the original detector results, decoders, filesystem command, and update CI.
 Reproductions use synthetic local credentials; verification remains disabled.
 
@@ -101,14 +101,14 @@ running them or checking out repository code.
 
 ## Validation
 
-The current corpus requires positive coverage for **899/899 registered scanner
+The current corpus requires positive coverage for **901/901 registered scanner
 instances**, with no detection or mapping gaps. This is one positive fixture per
 scanner, supplemented by exact-source, structured-credential, encoding,
 idempotence, failure, cancellation, resource-budget and confidentiality tests.
 
 Linux validation requires actual in-place writes and a second unchanged pass for
-all 899 scanner samples. The full production-registry command exercises a nested
-900-file tree on two runs. Fifteen separate fixtures specify exact expected
+all 901 scanner samples. The full production-registry command exercises a nested
+902-file tree on two runs. Fifteen separate fixtures specify exact expected
 source bytes independently; connection-parse failure and Box ambiguity
 regressions preserve their entire original batches. Linux ownership, extended
 attribute and POSIX ACL tests run on native Linux storage. Compatibility CI
@@ -143,7 +143,7 @@ reusing results from the earlier privilege-dependent implementation.
   termination; Linux individual renames remain atomic.
 - Only file contents are redacted. Git history, filenames, alternate data
   streams, extended attributes and other metadata can retain credentials.
-- The positive corpus covers the 899 registered scanner instances. Twenty-six
+- The positive corpus covers the 901 registered scanner instances. Twenty-six
   intentionally disabled upstream implementations remain outside this command.
   Ambiguous Box OAuth layouts can be refused when a retained public identifier
   becomes a new post-edit candidate; the original batch remains untouched.

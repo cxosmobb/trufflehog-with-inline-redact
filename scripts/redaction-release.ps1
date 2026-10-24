@@ -74,7 +74,8 @@ function Read-ReleaseFindings([string]$OutputText) {
 }
 
 # Deterministic synthetic credentials only; never print source or captured output.
-$secret = 'ghp_abcdefghijklmnopqrstuvwxyz0123456789'
+# Synthetic: ghp_ + first36hex(SHA256("trufflehog-native-inline-redaction-synthetic-fixture")).
+$secret = 'ghp_732e944dd9bca8079d5304a4d30f05e15e24'
 $source = 'const githubToken = "' + $secret + '"; // preserve' + "`r`n"
 $expected = 'const githubToken = "REDACTED"; // preserve' + "`r`n"
 foreach ($inputText in @($source, $expected)) {

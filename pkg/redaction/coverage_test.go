@@ -1,6 +1,7 @@
 package redaction_test
 
 import (
+	"context"
 	"crypto/sha256"
 	"encoding/json"
 	"fmt"
@@ -10,6 +11,9 @@ import (
 	"testing"
 
 	"github.com/trufflesecurity/trufflehog/v3/internal/redactiontest"
+	"github.com/trufflesecurity/trufflehog/v3/pkg/detectors"
+	"github.com/trufflesecurity/trufflehog/v3/pkg/detectors/fireworks"
+	"github.com/trufflesecurity/trufflehog/v3/pkg/detectors/infisical"
 	"github.com/trufflesecurity/trufflehog/v3/pkg/redaction"
 )
 
@@ -93,4 +97,35 @@ func TestReviewedDetectorSchema(t *testing.T) {
 // The command corpus consumes the same reviewed real-detector samples.
 func TestEveryDefaultDetectorRedacts(t *testing.T) {
 	_ = redactiontest.Fixtures(t)
+}
+
+// These synthetic credentials cover the complete source token, including the
+// optional fourth Infisical segment that is omitted only during verification.
+func TestUpstreamTokenDetectorsRedactWholeCredential(t *testing.T) {
+	infisicalToken := "st.550e8400-e29b-41d4-a716-446655440000." + strings.Repeat("0123456789abcdef", 2)
+	cases := []struct {
+		name     string
+		detector detectors.Detector
+		token    string
+	}{
+		{"Fireworks", &fireworks.Scanner{}, "fw_" + strings.Repeat("aB9", 9)},
+		{"Infisical", &infisical.Scanner{}, infisicalToken},
+		{"InfisicalDashboard", &infisical.Scanner{}, infisicalToken + "." + strings.Repeat("fedcba9876543210", 2)},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			scanner, err := redaction.New([]detectors.Detector{tc.detector})
+			if err != nil {
+				t.Fatal("cannot construct token redaction scanner")
+			}
+			input := "before = keep\r\ncredential = '" + tc.token + "'\r\nafter = keep\r\n"
+			output, report, err := scanner.Redact(context.Background(), []byte(input))
+			if err != nil {
+				t.Fatal("cannot redact synthetic token")
+			}
+			if string(output) != strings.ReplaceAll(input, tc.token, redaction.Marker) || report.Replacements != 1 {
+				t.Fatal("complete credential was not redacted with source context intact")
+			}
+		})
+	}
 }

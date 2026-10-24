@@ -1,6 +1,6 @@
 {
-  "production_files": 957,
-  "result_files": 922,
+  "production_files": 959,
+  "result_files": 924,
   "keys": [
     "access_key_id",
     "access_type",
@@ -93,7 +93,7 @@
     "host": 9,
     "id": 38,
     "ikey": 1,
-    "key": 851,
+    "key": 853,
     "key_name": 1,
     "organization": 3,
     "organization_id": 1,
@@ -428,7 +428,7 @@
     },
     {
       "path": "pkg/detectors/anypointoauth2/anypointoauth2.go",
-      "sha256": "16d4bf5deff68a83d0e7c2ff01086b411c7c6e6d454ddda173967c4a4a793803",
+      "sha256": "a6c8baa7e8c621468d61600c25d98b41bb63523009d5c2851695e9db2fb4b3d6",
       "part_keys": [
         "client_id",
         "client_secret"
@@ -3040,6 +3040,15 @@
       "delegating": false
     },
     {
+      "path": "pkg/detectors/fireworks/fireworks.go",
+      "sha256": "700f9b57c4691bf02b3704c18901a3a664a2bd8cc62941327fad83ba1e5f1637",
+      "part_keys": [
+        "key"
+      ],
+      "from_data": true,
+      "delegating": false
+    },
+    {
       "path": "pkg/detectors/fixerio/fixerio.go",
       "sha256": "48d379b0e65402daa4547964e11cd060562893f8a51655e1ef5d2c47bb6fff1c",
       "part_keys": [
@@ -4030,6 +4039,15 @@
     {
       "path": "pkg/detectors/impala/impala.go",
       "sha256": "2685e6e1b2eb1376ee6f751c74695e3ede7966860d84cf69ac9ef81b938e2caa",
+      "part_keys": [
+        "key"
+      ],
+      "from_data": true,
+      "delegating": false
+    },
+    {
+      "path": "pkg/detectors/infisical/infisical.go",
+      "sha256": "dc050bc547d1250bee8bd07f31d497742507e0aafb6166e1f609d623cf358ec4",
       "part_keys": [
         "key"
       ],
@@ -8933,7 +8951,7 @@
     },
     {
       "path": "pkg/engine/defaults/defaults.go",
-      "sha256": "73728be2f7a15e8b9b0ecfeb41cf758bd5c988901f9e019f9547205a23b5d874",
+      "sha256": "e0e04bd186d9da8070169933723066ff24fca8f8c74ad70092a5285b5a5b6a2b",
       "part_keys": null,
       "from_data": false,
       "delegating": false
