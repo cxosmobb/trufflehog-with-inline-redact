@@ -1,6 +1,6 @@
 //go:build windows
 
-package main
+package sourceredact
 
 import (
 	"bytes"
@@ -63,10 +63,14 @@ func TestWindowsStandardUserRedactsInPlace(t *testing.T) {
 	if production != "" {
 		production = copyWindowsTestExecutable(t, production, filepath.Join(owned, "trufflehog-redact.exe"))
 	}
+	native := os.Getenv("REDACTION_TEST_MAIN_BINARY")
+	if native != "" {
+		native = copyWindowsTestExecutable(t, native, filepath.Join(owned, "trufflehog.exe"))
+	}
 	ctx, cancel := context.WithTimeout(context.Background(), 21*time.Minute)
 	defer cancel()
 	command := exec.CommandContext(ctx, binary, "-test.run=^TestWindowsRestrictedTokenProcess$", "-test.v", "-test.timeout=20m")
-	command.Env = append(os.Environ(), "TRUFFLEHOG_REDACT_RESTRICTED_TEST=1", "TEMP="+owned, "TMP="+owned, "REDACTION_TEST_BINARY="+production)
+	command.Env = append(os.Environ(), "TRUFFLEHOG_REDACT_RESTRICTED_TEST=1", "TEMP="+owned, "TMP="+owned, "REDACTION_TEST_BINARY="+production, "REDACTION_TEST_MAIN_BINARY="+native)
 	command.SysProcAttr = &syscall.SysProcAttr{Token: syscall.Token(restricted), HideWindow: true}
 	var output bytes.Buffer
 	command.Stdout, command.Stderr = &output, &output

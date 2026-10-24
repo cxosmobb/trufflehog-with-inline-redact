@@ -89,7 +89,7 @@ var (
 	archiveTimeout       = cli.Flag("archive-timeout", "Maximum time to spend extracting an archive.").Duration()
 	includeDetectors     = cli.Flag("include-detectors", "Comma separated list of detector types to include. Protobuf name or IDs may be used, as well as ranges.").Default("all").String()
 	excludeDetectors     = cli.Flag("exclude-detectors", "Comma separated list of detector types to exclude. Protobuf name or IDs may be used, as well as ranges. IDs defined here take precedence over the include list.").String()
-	jobReportFile        = cli.Flag("output-report", "Write a scan report to the provided path.").Hidden().OpenFile(os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0666)
+	jobReportFile        = cli.Flag("output-report", "Write a scan report to the provided path.").Hidden().String()
 
 	noVerificationCache = cli.Flag("no-verification-cache", "Disable verification caching").Bool()
 
@@ -373,7 +373,21 @@ func init() {
 		usingTUI = true
 	}
 
-	cmd = kingpin.MustParse(cli.Parse(os.Args[1:]))
+	inlineIntent := inlineRequested(os.Args[1:])
+	args, argsErr := inlineArguments(os.Args[1:])
+	if argsErr != nil {
+		fmt.Fprintln(os.Stderr, "invalid command options")
+		os.Exit(1)
+	}
+	os.Args = append(os.Args[:1], args...)
+	// Argument files have already been read and validated; never reread them.
+	kingpin.EnableFileExpansion = false
+	parsed, parseErr := cli.Parse(os.Args[1:])
+	if parseErr != nil && (*inlineInPlace || inlineIntent || inlineRequested(os.Args[1:])) {
+		fmt.Fprintln(os.Stderr, "source redaction failed: invalid command options")
+		os.Exit(1)
+	}
+	cmd = kingpin.MustParse(parsed, parseErr)
 
 	// Configure logging.
 	switch {
@@ -410,6 +424,7 @@ func syncLogs(syncFn func() error) {
 }
 
 func main() {
+
 	// setup logger
 	logFormat := log.WithConsoleSink
 	if *jsonOut {
@@ -436,7 +451,7 @@ func main() {
 		// PreUpgrade: checkUpdateSignature(binaryPath string),
 	}
 
-	if !*noUpdate {
+	if !*noUpdate && !*inlineInPlace {
 		topLevelCmd, _, _ := strings.Cut(cmd, " ")
 		updateCfg.Fetcher = updater.Fetcher(topLevelCmd, usingTUI)
 	}
@@ -479,6 +494,10 @@ func run(state overseer.State, logSync func() error) {
 		<-killSignal
 		logger.Info("Received signal, shutting down.")
 		cancel(fmt.Errorf("canceling context due to signal"))
+		if *inlineInPlace {
+			// Let the transaction complete rollback and return a failing status.
+			return
+		}
 
 		if err := cleantemp.CleanTempArtifacts(ctx); err != nil {
 			logger.Error(err, "error cleaning temporary artifacts")
@@ -609,9 +628,20 @@ func run(state overseer.State, logSync func() error) {
 	conf := &config.Config{}
 	if *configFilename != "" {
 		var err error
-		conf, err = config.Read(*configFilename)
-		if err != nil {
-			logFatal(err, "error parsing the provided configuration file")
+		if *inlineInPlace {
+			var data []byte
+			data, err = inlineConfigBytes(*configFilename)
+			if err == nil {
+				conf, err = config.NewYAML(data)
+			}
+			if err != nil {
+				logFatal(fmt.Errorf("invalid or unreadable redaction configuration"), "error parsing the provided configuration file")
+			}
+		} else {
+			conf, err = config.Read(*configFilename)
+			if err != nil {
+				logFatal(err, "error parsing the provided configuration file")
+			}
 		}
 	}
 
@@ -701,17 +731,27 @@ func run(state overseer.State, logSync func() error) {
 		)
 	}
 
-	if *compareDetectionStrategies {
-		if err := compareScans(ctx, cmd, engConf); err != nil {
-			logFatal(err, "error comparing detection strategies")
+	var scanResult metrics
+	scan := func(scanCtx context.Context) error {
+		if *compareDetectionStrategies {
+			return compareScans(scanCtx, cmd, engConf)
 		}
-		return
+		var scanErr error
+		scanResult, scanErr = runSingleScan(scanCtx, cmd, engConf)
+		return scanErr
 	}
-
-	metrics, err := runSingleScan(ctx, cmd, engConf)
+	if *inlineInPlace {
+		err = runInlineRedaction(ctx, conf, scan)
+	} else {
+		err = scan(ctx)
+	}
 	if err != nil {
 		logFatal(err, "error running scan")
 	}
+	if *compareDetectionStrategies {
+		return
+	}
+	metrics := scanResult
 
 	// SARIF can't be streamed like the other output formats: it's a single JSON document
 	// wrapping every result, so it's buffered by the printer and written out here, once
@@ -812,8 +852,12 @@ func runSingleScan(ctx context.Context, cmd string, cfg engine.Config) (metrics,
 
 	// Setup job report writer if provided
 	var jobReportWriter io.WriteCloser
-	if *jobReportFile != nil {
-		jobReportWriter = *jobReportFile
+	if *jobReportFile != "" {
+		file, err := os.OpenFile(*jobReportFile, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0666)
+		if err != nil {
+			return scanMetrics, fmt.Errorf("cannot open scan report: %w", err)
+		}
+		jobReportWriter = file
 	}
 
 	handleFinishedMetrics := func(ctx context.Context, finishedMetrics <-chan sources.UnitMetrics, jobReportWriter io.WriteCloser) {

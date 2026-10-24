@@ -294,28 +294,13 @@ func NewEngine(ctx context.Context, cfg *Config) (*Engine, error) {
 
 	engine.setDefaults(ctx)
 
-	// Build include and exclude detector sets for filtering on engine initialization.
-	includeDetectorSet, excludeDetectorSet, err := buildDetectorSets(cfg)
+	selectedDetectors, err := SelectDetectors(engine.detectors, cfg.IncludeDetectors, cfg.ExcludeDetectors)
 	if err != nil {
 		return nil, err
 	}
+	engine.detectors = selectedDetectors
 
-	// Apply include/exclude filters.
 	var filters []func(detectors.Detector) bool
-
-	if len(includeDetectorSet) > 0 {
-		filters = append(filters, func(d detectors.Detector) bool {
-			_, ok := getWithDetectorID(d, includeDetectorSet)
-			return ok
-		})
-	}
-
-	if len(excludeDetectorSet) > 0 {
-		filters = append(filters, func(d detectors.Detector) bool {
-			_, ok := getWithDetectorID(d, excludeDetectorSet)
-			return !ok
-		})
-	}
 
 	// Apply custom verifier endpoints to detectors that support it.
 	detectorsWithCustomVerifierEndpoints, err := parseCustomVerifierEndpoints(cfg.VerifierEndpoints)

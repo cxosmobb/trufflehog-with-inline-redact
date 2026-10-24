@@ -1,4 +1,4 @@
-package main
+package sourceredact
 
 import (
 	"bytes"
@@ -24,7 +24,10 @@ func TestRedactCommandProcess(t *testing.T) {
 	for i, arg := range os.Args {
 		if arg == "--" {
 			os.Args = append([]string{"trufflehog-redact"}, os.Args[i+1:]...)
-			main()
+			if err := Run(os.Args[1:], os.Stdin, os.Stdout, os.Stderr); err != nil {
+				fmt.Fprintln(os.Stderr, "source redaction failed:", err)
+				os.Exit(1)
+			}
 			os.Exit(0)
 		}
 	}
@@ -35,6 +38,10 @@ func runRedactCommand(t *testing.T, args ...string) {
 	t.Helper()
 	binary := os.Getenv("REDACTION_TEST_BINARY")
 	commandArgs := args
+	if native := os.Getenv("REDACTION_TEST_MAIN_BINARY"); native != "" {
+		binary = native
+		commandArgs = mainCommandArgs(args)
+	}
 	if binary == "" {
 		var err error
 		binary, err = os.Executable()
@@ -54,9 +61,37 @@ func runRedactCommand(t *testing.T, args ...string) {
 		// source bytes or credentials. Failure is localized by the test name.
 		t.Fatalf("redaction command failed: %v (stdout=%d bytes; stderr=%d bytes)", err, stdout.Len(), stderr.Len())
 	}
-	if stdout.Len() != 0 || stderr.Len() != 0 {
-		t.Fatal("successful in-place command emitted source or diagnostics")
+	if os.Getenv("REDACTION_TEST_MAIN_BINARY") != "" {
+		// Native --in-place retains ordinary JSON findings from the original
+		// source. Their secret fields are intentional; never print this buffer.
+		if stderr.Len() != 0 {
+			t.Fatalf("native in-place command emitted diagnostics (%d bytes)", stderr.Len())
+		}
+		assertNativeJSONOutput(t, stdout.Bytes())
+		return
 	}
+	if stdout.Len() != 0 || stderr.Len() != 0 {
+		t.Fatal("successful standalone in-place command emitted source or diagnostics")
+	}
+}
+
+// The full TruffleHog executable keeps its source subcommand and flag namespace.
+func mainCommandArgs(args []string) []string {
+	result := []string{"--no-update", "--no-verification", "--log-level=-1", "--json", "filesystem", "--in-place"}
+	for _, arg := range args {
+		if arg == "--in-place" {
+			continue
+		}
+		for _, flag := range []string{"timeout", "max-bytes", "max-total-bytes", "max-files"} {
+			old := "--" + flag
+			if arg == old || strings.HasPrefix(arg, old+"=") {
+				arg = "--redaction-" + flag + strings.TrimPrefix(arg, old)
+				break
+			}
+		}
+		result = append(result, arg)
+	}
+	return result
 }
 
 type exactInPlaceFixture struct {

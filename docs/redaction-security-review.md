@@ -75,6 +75,30 @@ are not crash-atomic. Rollback covers controlled failures, not every operating
 system or storage failure. The importing pipeline must keep the tree private
 and require exit status zero before exposing it downstream.
 
+## Native CLI integration
+
+Full TruffleHog retains its upstream commands, flags and normal scanner path.
+`--in-place` opts local filesystem inputs into the same bounded source-editing
+implementation used by the compatibility wrapper. It runs the ordinary scanner
+against the original source, prints its normal findings, then commits redaction.
+The preceding scan preserves verification, output, result filters, profiling and
+comparison semantics; importing pipelines should use `--no-verification` to
+prevent provider checks. Its printed findings can contain original credentials,
+as explicitly requested, so stdout and other normal output channels must remain
+trusted. The separate source-editing pass always disables verification and ignores
+reporting filters. Self-updates are skipped during editing to retain the fork's
+redaction implementation. Remote sources and Git history cannot be edited.
+Detector and path selections bound what is redacted, so importing pipelines
+must avoid exclusions which hide secrets from their selected scope.
+
+Release smoke tests capture ordinary JSON findings without printing them and
+verify the source remains byte-for-byte unchanged. Native in-place tests require
+original-secret JSON findings, exact edits, second-pass absence of findings,
+idempotence and preserved Windows file identity. Both native and
+wrapper executables are bound to the same reviewed source revision and archive
+allowlist; the isolated publisher validates both x64 executable headers without
+running them or checking out repository code.
+
 ## Validation
 
 The current corpus requires positive coverage for **899/899 registered scanner
@@ -92,9 +116,10 @@ records the passing results for each published revision.
 
 Windows compatibility requires the actual in-place corpus, exact command fixtures
 and second unchanged pass on NTFS without privileged descriptor copying. The
-release build separately requires the packaged executable to edit two nested
-files, preserve their identities and pass again unchanged, alongside exact
-UTF-8/CRLF source-stream and help checks. Audit-SACL fixture creation can require
+release build separately requires packaged full TruffleHog to preserve ordinary
+offline JSON findings and upstream command help, then edit two nested files via
+`filesystem --in-place`, preserve their identities and pass again unchanged.
+The compatibility wrapper also passes exact UTF-8/CRLF source-stream checks. Audit-SACL fixture creation can require
 privileged test setup; that optional fixture cannot replace ordinary successful
 in-place tests. Linux metadata tests execute on native Linux storage. The decoder
 and GCP upstream unit suites, static-audit and context tests, workflow lint, and

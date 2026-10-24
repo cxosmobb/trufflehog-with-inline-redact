@@ -226,29 +226,30 @@ jobs:
           require(digest == checksum[:64], 'Release checksum mismatch')
           with zipfile.ZipFile(root / asset) as archive:
               entries = archive.infolist()
-              require(len(entries) == 4 and {e.filename for e in entries} == {'trufflehog-redact.exe', 'LICENSE', 'README.txt', 'BUILD.txt'}, 'Unexpected ZIP entries')
+              require(len(entries) == 5 and {e.filename for e in entries} == {'trufflehog.exe', 'trufflehog-redact.exe', 'LICENSE', 'README.txt', 'BUILD.txt'}, 'Unexpected ZIP entries')
               require(all(not e.is_dir() and not stat.S_ISLNK(e.external_attr >> 16) and 0 < e.file_size <= 256 * 1024 * 1024 for e in entries), 'Invalid ZIP entry type or size')
-              require(sum(e.file_size for e in entries) <= 260 * 1024 * 1024, 'ZIP exceeds size limit')
+              require(sum(e.file_size for e in entries) <= 512 * 1024 * 1024, 'ZIP exceeds size limit')
               require(archive.getinfo('BUILD.txt').file_size <= 4096, 'Oversized build metadata')
               metadata = archive.read('BUILD.txt').decode('ascii')
               require(metadata.splitlines()[0] == f'Source commit: {sha}', 'Archive revision mismatch')
-              with archive.open('trufflehog-redact.exe') as stream:
-                  header = stream.read(4096)
-              require(header[:2] == b'MZ' and len(header) >= 64, 'Missing executable header')
-              offset = struct.unpack_from('<I', header, 60)[0]
-              require(offset <= len(header) - 6 and header[offset:offset + 4] == b'PE\0\0' and struct.unpack_from('<H', header, offset + 4)[0] == 0x8664, 'Not a Windows x64 executable')
+              for executable in ('trufflehog.exe', 'trufflehog-redact.exe'):
+                  with archive.open(executable) as stream:
+                      header = stream.read(4096)
+                  require(header[:2] == b'MZ' and len(header) >= 64, 'Missing executable header')
+                  offset = struct.unpack_from('<I', header, 60)[0]
+                  require(offset <= len(header) - 6 and header[offset:offset + 4] == b'PE\0\0' and struct.unpack_from('<H', header, offset + 4)[0] == 0x8664, 'Not a Windows x64 executable')
               require(archive.testzip() is None, 'Corrupt ZIP entry')
           PY
           asset="$RUNNER_TEMP/redaction-release/trufflehog-redact-windows-amd64-$RELEASE_SHA.zip"
           cat > "$RUNNER_TEMP/redaction-release-notes.md" <<EOF
-          Windows x64 inline source redactor from commit $RELEASE_SHA.
+          Windows x64 TruffleHog with inline source redaction from commit $RELEASE_SHA.
 
-          The exact revision passed the complete Linux and Windows redaction compatibility matrix. The packaged executable also passed exact source-stream redaction, a nested two-file in-place directory, unchanged original file identities, and second-pass idempotence on Windows. Download the ZIP and SHA256SUMS, verify its checksum, and read README.txt before use.
+          The exact revision passed the complete Linux and Windows redaction compatibility matrix. The ZIP contains full trufflehog.exe with all upstream commands and flags, plus the trufflehog-redact.exe compatibility wrapper. The packaged full executable passed ordinary offline JSON detection without modifying source, upstream command help, native filesystem --in-place on a nested two-file directory with original-secret JSON findings, unchanged original file identities, and a second pass without findings or further edits. The wrapper also passed exact source-stream redaction. Download the ZIP and SHA256SUMS, verify its checksum, and read README.txt before use.
 
-          Run Windows in-place redaction as a standard user on a private NTFS import with ordinary read/write access. Administrator access and SeSecurityPrivilege are not required. Original file security is retained without privilege changes. Hard-linked, read-only or locked changed files block writes. Abrupt termination can leave partially written files; keep a separate original copy if recovery is required and require exit status zero before downstream scanning.
+          Run Windows in-place redaction as a standard user on a private NTFS import with ordinary read/write access. Administrator access and SeSecurityPrivilege are not required. Original findings are printed before edits and can contain credentials; protect that output. Use --no-verification when provider checks are unwanted. Original file security is retained without privilege changes. Hard-linked, read-only or locked changed files block writes. Abrupt termination can leave partially written files; keep a separate original copy if recovery is required and require exit status zero before downstream scanning.
 
           These builds are unsigned. The upstream TruffleHog version number is not reused for fork releases.
           EOF
           gh release create "$RELEASE_TAG" "$asset" "$RUNNER_TEMP/redaction-release/SHA256SUMS" \
-            --target "$RELEASE_SHA" --title "Inline redactor Windows x64 (${RELEASE_SHA:0:12})" \
+            --target "$RELEASE_SHA" --title "TruffleHog with inline redaction Windows x64 (${RELEASE_SHA:0:12})" \
             --notes-file "$RUNNER_TEMP/redaction-release-notes.md" --latest

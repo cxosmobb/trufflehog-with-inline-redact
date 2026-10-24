@@ -1,4 +1,4 @@
-package main
+package sourceredact
 
 import (
 	"bytes"

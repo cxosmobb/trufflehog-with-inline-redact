@@ -25,11 +25,24 @@ GitHub Actions checks current upstream updates against the complete redaction
 corpus before integration. Failed checks and merge conflicts block updates;
 future upstream incompatibilities require a repair rather than bypassing tests.
 
-Build `go build -o trufflehog-redact ./cmd/trufflehog-redact`, then run
-`trufflehog-redact --in-place ./imported-source` before giving the imported
-source to a downstream scanner. This command overwrites the original source
-credential values with `REDACTED`. See [usage and guarantees](docs/source-redaction.md)
-and [fork maintenance](docs/redaction-maintenance.md).
+The full `trufflehog` binary retains upstream commands, flags and normal scan
+output. Build it with `go build -o trufflehog .`, then add `--in-place` to a local
+filesystem scan:
+
+```sh
+./trufflehog --no-update --no-verification filesystem --in-place ./imported-source
+```
+
+This prints normal findings about the original source, then overwrites detected
+credential values in that source with `REDACTED`. Findings can contain original
+credentials; keep that output trusted. Only start the downstream scanner after
+exit status zero. Omit
+`--in-place` to use ordinary TruffleHog functionality, including remote sources
+and original output formats. The Windows [release ZIPs](https://github.com/cxosmobb/trufflehog-with-inline-redact/releases)
+contain full `trufflehog.exe`; `trufflehog-redact` remains a compatibility wrapper
+for existing pipelines and buffered stream redaction. See
+[usage and guarantees](docs/source-redaction.md) and
+[fork maintenance](docs/redaction-maintenance.md).
 
 # :mag_right: _Now Scanning_
 
