@@ -201,8 +201,12 @@ func TestRedactFilesFailureLeavesBatchUnchangedAndCleansStaging(t *testing.T) {
 				calls++
 				if calls == 2 && kind == "detector" {
 					staged, err := filepath.Glob(filepath.Join(dir, ".trufflehog-redact-*"))
-					if err != nil || len(staged) != 1 {
-						t.Error("first file was not staged before the second detector failure")
+					expectedStages := 0
+					if stageSourceFiles {
+						expectedStages = 1
+					}
+					if err != nil || len(staged) != expectedStages {
+						t.Error("unexpected source staging before the second detector failure")
 					}
 					return nil, redaction.Report{}, errors.New("synthetic detector failure")
 				}
@@ -417,6 +421,9 @@ func TestSourceFilesDeduplicatesCaseAliasesOnWindows(t *testing.T) {
 }
 
 func TestRedactFilesWithholdsTamperedStaging(t *testing.T) {
+	if !stageSourceFiles {
+		t.Skip("Windows uses recovery streams; tampering is covered by TestWindowsRecoveryRejectsJournalCorruption")
+	}
 	requireInPlaceSecurity(t)
 	dir := t.TempDir()
 	first := writeSource(t, dir, "first.go", "SYNTHETIC_SECRET first", 0644)

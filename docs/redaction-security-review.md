@@ -10,7 +10,7 @@ Reproductions use synthetic local credentials; verification remains disabled.
 | --- | --- | --- |
 | Confidentiality: residual structured secrets | Returning the first URI password/SAS signature or the last JSON private key left other values in the source while the audit passed. GCP also normalized away duplicate fields before redaction. | Collect all password/signature/private-key values; request original GCP JSON only in source mode. Tests invoke real JDBC, Azure SAS and GCP detectors and compare exact edited source. |
 | Confidentiality: expanded scanner output | Additive `SecretParts` entries were also serialized by the ordinary TruffleHog JSON printer. | Request extra components only with a source-redaction context. The full scanner corpus checks ordinary results omit each added field and source results contain it. |
-| Confidentiality: diagnostics and temporary files | Detector panic payloads, context logs, invalid flag values, writer errors, and insufficient staging permissions could expose source information. Windows mode `0600` did not restrict ACLs. | Recover panics without payloads, discard detector context logs, sanitize command errors, and enforce private staging before writing bytes. Windows uses and verifies a protected process-user/LocalSystem DACL. |
+| Confidentiality: diagnostics and recovery files | Detector panic payloads, context logs, invalid flag values, writer errors, and insufficient staging permissions could expose source information. Windows mode `0600` did not restrict ACLs. | Recover panics without payloads, discard editing-pass context logs, sanitize command errors, and protect Linux stages before writing bytes. Windows stores authenticated undo contents only as user-scoped DPAPI ciphertext in source-bound ADS; it creates no visible sidecar stages. |
 | Integrity: filesystem substitutions | Staged bytes were not rechecked; file identity/mode substitutions and parent replacement could redirect or alter writes. Replacing files lost security metadata. | Pin filesystem roots; check canonical paths, identity, contents and security metadata; recheck staging and committed outputs; preserve supported security metadata and attempt bounded rollback on failure. Linux applies original security metadata before restoring mode bits; Windows retains the original object and security descriptor. |
 | Availability: excessive work | Per-character provenance, whole-source multipart detection/HTML parsing, reverse-splicing Unicode escapes, unbounded rechecks, and unlimited directory enumeration amplified input cost. | Compact provenance; use upstream-sized detector/decoder windows; use linear Unicode reconstruction; cap views, patterns, findings, unique edits, detector work, metadata, files and directories; bound rechecks. |
 | Functional correctness and future review | Duplicate multipart combinations exhausted a span budget for the same source occurrences. The static audit omitted some computed map writes/direct assignments, weakening update review. | Deduplicate physical spans before accounting. Strengthen the AST audit and test its dynamic-key/assignment handling; compare a freshly generated inventory in CI. |
@@ -59,22 +59,64 @@ the user owned. This was an implementation constraint, not a requirement for
 editing ordinary source-file contents. The previous elevation guidance is
 superseded by the same-file mechanism below.
 
-Windows now retains each original file object. After scanning and private
-staging finish, it acquires read/write handles for every changed file with
-write/delete sharing denied. It validates file identity and contents and rejects
-hard links, read-only files, reparse points and unavailable locks before editing
-any original. It writes, truncates, flushes and verifies through those handles;
-controlled failures restore the current and earlier files through the same
-handles. No original owner, DACL, SACL or integrity label is copied or changed,
-so no audit privilege, Administrator session or token modification is required.
-Microsoft documents [file access and sharing](https://learn.microsoft.com/en-us/windows/win32/api/fileapi/nf-fileapi-createfilea)
+Windows retains each original file object. It acquires read/write handles for
+every changed file with write/delete sharing denied, validates identity and
+contents, and rejects hard links, read-only files, reparse points and unavailable
+locks before editing. It writes, truncates, flushes and verifies through those
+handles; controlled failures restore the current and earlier files through the
+same handles. The owner, DACL, SACL and integrity label are never copied or
+changed, so no audit privilege, Administrator session or token modification is
+required. Microsoft documents [file access and sharing](https://learn.microsoft.com/en-us/windows/win32/api/fileapi/nf-fileapi-createfilea)
 and [reopening the existing object](https://learn.microsoft.com/en-us/windows/win32/api/winbase/nf-winbase-reopenfile).
 
-Same-file writes can be interrupted by process termination or power loss and
-are not crash-atomic. Rollback covers controlled failures, not every operating
-system or storage failure. The importing pipeline must keep the tree private
-and require exit status zero before exposing it downstream.
+## Windows interrupted-write recovery
 
+Same-file writes previously relied on process-local rollback. Terminating a
+process during a write left a torn file after the original bytes disappeared
+from memory. Windows now durably records each original and intended target
+before mutation. The authenticated record uses user-scoped Windows DPAPI and
+lives in reserved ADS on the original source object. It is bound to that file's
+identity, parent identity, canonical path and readable security metadata.
+Original source bytes never reach a recovery stream as plaintext. Windows
+creates no visible sidecar stages, and unrelated ADS remain attached unchanged.
+
+The encrypted payload is flushed before its ready marker is created and flushed;
+the base object is flushed before its source bytes change. After all changed
+sources are flushed and verified, cleanup durably removes each marker before
+its payload. If rollback has written original bytes but their flush fails,
+byte equality alone cannot justify deleting the recovery records: every restored
+source must flush successfully before any journal is cleared. A regression
+injects that final flush failure and requires both journals to remain armed.
+
+Recovery runs before detection and path selection in the explicit input scope.
+This matters because a torn secret may no longer match a detector, and current
+filters may exclude a file selected by the interrupted run. Valid armed records
+restore and verify the original bytes, after which ordinary scanning and
+redaction retry. A completed record already durably disarmed is only cleaned up;
+its target remains intact. Invalid authentication, unexpected bytes, changed
+identity/path/policy, competing locks and resource overruns fail closed without
+discarding the affected record. ADS opens are relative to the pinned source
+handle, and cleanup acts on those exact stream handles.
+
+Per-file/ciphertext checks run before allocation and DPAPI. Fixed record caps
+and aggregate journal budgets bound pending-record work. Recovery's unfiltered
+enumeration obeys file/directory limits; configured per-file and total limits
+also bound the current sources processed by recovery and the subsequent scan.
+These bounds do not claim a historical-original total across already disarmed,
+completed records, which need no undo write.
+
+Regression tests kill real child processes after a flushed partial second-file
+write, after source completion, during recovery and after durable disarming.
+Fresh invocations must recover before scanning/filtering, produce exact final
+bytes and retain original identities, security descriptors and unrelated ADS.
+Corrupted/truncated/forged records, journal swaps, replay onto a replacement,
+post-crash content/ACL changes, new hard links and active transactions must be
+refused. The tests also run with the existing restricted Windows token; no
+elevated privilege is enabled. They test process interruption, not physical
+power loss. Durability assumes the original local NTFS objects and storage that
+honors flush requests. The same Windows user must retain their DPAPI keys and
+rerun the same input paths. A whole directory is not an atomic transaction;
+keep it private and gate downstream access on exit status zero.
 ## Native CLI integration
 
 Full TruffleHog retains its upstream commands, flags and normal scanner path.
@@ -131,16 +173,19 @@ reusing results from the earlier privilege-dependent implementation.
 - Gate downstream access on exit status zero, and use an exclusively owned
   imported tree. A malicious concurrent writer cannot be excluded by a
   filesystem-wide compare-and-swap operation; a batch is not crash-atomic.
-- Windows storage must retain protected staging ACLs and stable file identity.
-  Use a private NTFS import with ordinary read/write access. Files with read-only
+- Windows storage must retain stable file identities and reserved ADS and honor
+  flush requests. Use an exclusively owned local NTFS import with ordinary
+  read/write access and the same user's DPAPI keys. Files with read-only
   attributes, hard-link aliases or conflicting access are rejected before the
   batch is edited. The command does not elevate or modify its token.
 - Linux preserves uid/gid and readable extended attributes by copying them to
   replacements. Windows retains the existing file object and its owner/group/
   DACL/SACL, including audit rules and mandatory integrity labels. Unsupported
   metadata, unavailable access and other operating systems block in-place edits.
-  Windows same-file writes can leave a partially written file after abrupt
-  termination; Linux individual renames remain atomic.
+  Windows interrupted same-file writes recover on retry before scanning; until
+  recovery succeeds, a file or batch can have mixed contents. Invalid recovery
+  records remain in place and block completion. Linux individual renames remain
+  atomic.
 - Only file contents are redacted. Git history, filenames, alternate data
   streams, extended attributes and other metadata can retain credentials.
 - The positive corpus covers the 901 registered scanner instances. Twenty-six
