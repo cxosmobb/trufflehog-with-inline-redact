@@ -8033,7 +8033,7 @@
     },
     {
       "path": "pkg/detectors/tru/tru.go",
-      "sha256": "499a334732226a0d372560e29a0bf06f854b2b881c2870cec464245ebe2e6b23",
+      "sha256": "8576a9469cab08cb9d5a129cc75fbb4169a5a1c04c1da07ae3afbe0a96f5d4d4",
       "part_keys": [
         "key",
         "secret"

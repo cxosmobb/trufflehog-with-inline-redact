@@ -57,6 +57,9 @@ func TestWrongSecretsRepositoryInPlace(t *testing.T) {
 		t.Fatal("in-place output did not preserve the original native findings")
 	}
 	redacted := wrongSecretsSnapshot(t, dir, "")
+	if publicHTML, exists := original["chatgpt_dump.html"]; !exists || redacted["chatgpt_dump.html"].hash != publicHTML.hash {
+		t.Fatal("source redaction changed public HTML nonces or script data")
+	}
 	changed := wrongSecretsChanges(t, original, redacted, runtime.GOOS == "windows")
 	if changed == 0 || len(wrongSecretsCommand(t, dir, false, 0).counts) != 0 {
 		t.Fatal("WrongSecrets was not edited or retained native findings after redaction")

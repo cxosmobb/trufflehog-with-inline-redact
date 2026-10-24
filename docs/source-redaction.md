@@ -433,3 +433,11 @@ operating constraints.
 Secret scanning remains detection-based: credentials which TruffleHog does not
 detect cannot be redacted by this feature. Treat this as a preprocessing layer,
 not a guarantee that arbitrary input is free of every possible secret.
+
+Tru provider context uses namespace boundaries, so ordinary `true`, `trust` or
+`structure` text cannot turn public CSP nonces and script fragments into
+credentials. The scanner remains enabled with its existing credential alphabet,
+component fields and verification behavior. Synthetic mixed-source tests require
+real Tru candidates to be redacted while public HTML remains byte exact; the
+pinned WrongSecrets integration also requires its entire `chatgpt_dump.html`
+file to remain unchanged. CI runs the complete Tru detector unit package.

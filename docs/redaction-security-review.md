@@ -278,3 +278,11 @@ reusing results from the earlier privilege-dependent implementation.
   source schemas or application behavior by design.
 
 See [usage](source-redaction.md) and [maintenance](redaction-maintenance.md).
+
+Tru provider context uses namespace boundaries, so ordinary `true`, `trust` or
+`structure` text cannot turn public CSP nonces and script fragments into
+credentials. The scanner remains enabled with its existing credential alphabet,
+component fields and verification behavior. Synthetic mixed-source tests require
+real Tru candidates to be redacted while public HTML remains byte exact; the
+pinned WrongSecrets integration also requires its entire `chatgpt_dump.html`
+file to remain unchanged. CI runs the complete Tru detector unit package.

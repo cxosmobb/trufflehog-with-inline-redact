@@ -243,3 +243,11 @@ checks. Preserve the regression where decoding joins an unredacted paired
 component to `REDACTED` and the paired detector stops firing: output must still
 be withheld. Retain complete post-edit detector scans and the provenance/match
 budgets; do not replace them with a context allowlist or output mask.
+
+Tru provider context uses namespace boundaries, so ordinary `true`, `trust` or
+`structure` text cannot turn public CSP nonces and script fragments into
+credentials. The scanner remains enabled with its existing credential alphabet,
+component fields and verification behavior. Synthetic mixed-source tests require
+real Tru candidates to be redacted while public HTML remains byte exact; the
+pinned WrongSecrets integration also requires its entire `chatgpt_dump.html`
+file to remain unchanged. CI runs the complete Tru detector unit package.

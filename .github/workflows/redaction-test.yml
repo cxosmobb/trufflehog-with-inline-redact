@@ -98,7 +98,7 @@ jobs:
           go test -p 2 -count=1 -timeout=30m ./pkg/redaction/... ./internal/sourceredact/... ./cmd/trufflehog-redact/...
           go test -p 2 -count=1 ./pkg/decoders
           go test -p 2 -count=1 ./pkg/detectors/redaction_context.go ./pkg/detectors/redaction_context_test.go
-          go test -p 2 -count=1 ./pkg/detectors/jdbc ./pkg/detectors/postgres ./pkg/detectors/slackwebhook
+          go test -p 2 -count=1 ./pkg/detectors/jdbc ./pkg/detectors/postgres ./pkg/detectors/slackwebhook ./pkg/detectors/tru
           go test -p 2 -count=1 ./pkg/engine -run '^TestSelectDetectors'
       - name: Test and review the current static detector inventory
         run: |
