@@ -29,7 +29,7 @@ jobs:
       matrix:
         os: [ubuntu-latest, windows-latest]
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 60
+    timeout-minutes: 75
     env:
       CGO_ENABLED: '0'
       GOMAXPROCS: '2'
@@ -121,10 +121,11 @@ jobs:
           git -c core.hooksPath=/dev/null init --quiet "$fixture/git"
           git -C "$fixture/git" -c core.hooksPath=/dev/null fetch --quiet --no-tags --depth=1 https://github.com/OWASP/wrongsecrets.git "$REDACTION_WRONGSECRETS_REVISION"
           test "$(git -C "$fixture/git" rev-parse FETCH_HEAD)" = "$REDACTION_WRONGSECRETS_REVISION"
-          git -C "$fixture/git" archive --format=tar --output="$fixture/source.tar" FETCH_HEAD
+          git -C "$fixture/git" -c core.autocrlf=false -c core.eol=lf archive --format=tar --output="$fixture/source.tar" FETCH_HEAD
           tar -xf "$fixture/source.tar" -C "$fixture/input"
           export REDACTION_WRONGSECRETS_FIXTURE="$fixture/input"
           if [[ "$RUNNER_OS" == Windows ]]; then
             export REDACTION_WRONGSECRETS_FIXTURE=$(cygpath -m "$fixture/input")
           fi
-          go test -p 2 -count=1 -v -timeout=25m ./internal/sourceredact -run '^TestWrongSecretsRepositoryInPlace$'
+          # Cover two separately capped 15-minute redactions plus ordinary scans.
+          go test -p 2 -count=1 -v -timeout=40m ./internal/sourceredact -run '^TestWrongSecretsRepositoryInPlace$'
