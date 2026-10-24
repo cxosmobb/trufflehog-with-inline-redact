@@ -101,7 +101,10 @@ func readLimited(reader io.Reader, limit int64) ([]byte, error) {
 }
 
 func unsupportedContainer(data []byte) bool {
-	for _, magic := range [][]byte{[]byte("PK\x03\x04"), []byte("PK\x05\x06"), {0x1f, 0x8b}, []byte("7z\xbc\xaf\x27\x1c"), []byte("Rar!"), []byte("%PDF-"), []byte("BZh"), {0xfd, 0x37, 0x7a, 0x58, 0x5a, 0x00}, {0x28, 0xb5, 0x2f, 0xfd}, []byte("!<arch>\n"), {0xed, 0xab, 0xee, 0xdb}} {
+	if redaction.IsZIPContainer(data) {
+		return !redaction.IsSupportedZIP(data)
+	}
+	for _, magic := range [][]byte{[]byte("PK\x03\x04"), []byte("PK\x05\x06"), []byte("PK\x01\x02"), []byte("PK\x07\x08"), []byte("PK\x06\x06"), []byte("PK\x06\x07"), {0x1f, 0x8b}, []byte("7z\xbc\xaf\x27\x1c"), []byte("Rar!"), []byte("%PDF-"), []byte("BZh"), {0xfd, 0x37, 0x7a, 0x58, 0x5a, 0x00}, {0x28, 0xb5, 0x2f, 0xfd}, []byte("!<arch>\n"), {0xed, 0xab, 0xee, 0xdb}} {
 		if bytes.HasPrefix(data, magic) {
 			return true
 		}

@@ -24,8 +24,8 @@ type projectedText struct {
 // Source text is untrusted. Bound the decoded representations and their
 // provenance, including for callers that use the library without the CLI.
 const (
-	maxViewBytes     = 32 << 20
-	maxAllViewBytes  = 128 << 20
+	maxViewBytes     = 64 << 20
+	maxAllViewBytes  = 256 << 20
 	maxViewPieces    = 65536
 	maxAllViewPieces = 262144
 )

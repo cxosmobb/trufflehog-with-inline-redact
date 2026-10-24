@@ -29,6 +29,12 @@ var (
 		"Slack Service Web Hook":   regexp.MustCompile(`(https://hooks\.slack\.com/services/T[A-Z0-9]+/B[A-Z0-9]+/[A-Za-z0-9]{23,25})`),
 		"Slack Workflow Web Hook ": regexp.MustCompile(`(https://hooks\.slack\.com/workflows/T[A-Z0-9]+/A[A-Z0-9]+/[0-9]{17,19}/[A-Za-z0-9]{23,25})`),
 	}
+	// Source editing needs the complete sensitive path segment. The ordinary
+	// patterns can stop after 25 characters inside a longer credential.
+	redactionKeyPats = map[string]*regexp.Regexp{
+		"Slack Service Web Hook":   regexp.MustCompile(`(https://hooks\.slack\.com/services/T[A-Z0-9]+/B[A-Z0-9]+/[A-Za-z0-9]{23,})`),
+		"Slack Workflow Web Hook ": regexp.MustCompile(`(https://hooks\.slack\.com/workflows/T[A-Z0-9]+/A[A-Z0-9]+/[0-9]{17,19}/[A-Za-z0-9]{23,})`),
+	}
 )
 
 // Keywords are used for efficiently pre-filtering chunks.
@@ -40,8 +46,12 @@ func (s Scanner) Keywords() []string {
 // FromData will find and optionally verify SlackWebhook secrets in a given set of bytes.
 func (s Scanner) FromData(ctx context.Context, verify bool, data []byte) (results []detectors.Result, err error) {
 	dataStr := string(data)
+	patterns := keyPats
+	if detectors.SourceRedactionEnabled(ctx) {
+		patterns = redactionKeyPats
+	}
 
-	for _, keyPat := range keyPats {
+	for _, keyPat := range patterns {
 		matches := keyPat.FindAllStringSubmatch(dataStr, -1)
 
 		for _, match := range matches {

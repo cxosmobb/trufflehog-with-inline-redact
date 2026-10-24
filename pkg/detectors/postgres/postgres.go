@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"net/url"
 	"strconv"
 	"strings"
 	"time"
@@ -67,9 +68,9 @@ func isNonConnectionParam(key string) bool {
 // Multi-host connection string URIs are currently not supported because pq.ParseURI doesn't parse them correctly. If we
 // happen to run into a case where this matters we can address it then.
 var (
-	_          detectors.Detector = (*Scanner)(nil)
-	uriPattern                    = regexp.MustCompile(`\b(?i)(postgres(?:ql)?)://\S+\b`)
-	connStrPartPattern = regexp.MustCompile(`([[:alpha:]_]+)='(.+?)' ?`)
+	_                  detectors.Detector = (*Scanner)(nil)
+	uriPattern                            = regexp.MustCompile(`\b(?i)(postgres(?:ql)?)://\S+\b`)
+	connStrPartPattern                    = regexp.MustCompile(`([[:alpha:]_]+)='(.+?)' ?`)
 )
 
 type Scanner struct {
@@ -118,6 +119,18 @@ func (s Scanner) Keywords() []string {
 
 func (s Scanner) FromData(ctx context.Context, verify bool, data []byte) ([]detectors.Result, error) {
 	var results []detectors.Result
+	if detectors.SourceRedactionEnabled(ctx) {
+		// Validate before normalization can discard an additional credential
+		// property, even when the ordinary password is already REDACTED.
+		for _, uri := range uriPattern.FindAll(data, -1) {
+			if shouldIgnore(uri, s.ignorePatterns) {
+				continue
+			}
+			if _, _, err := postgresRedactionURL(string(uri)); err != nil {
+				return nil, err
+			}
+		}
+	}
 	candidateURIs := findUriMatches(data, s.ignorePatterns)
 
 	for _, candidateURI := range candidateURIs {
@@ -231,8 +244,78 @@ func (s Scanner) FromData(ctx context.Context, verify bool, data []byte) ([]dete
 	return results, nil
 }
 
-func (s Scanner) IsFalsePositive(_ detectors.Result) (bool, string) {
+func (s Scanner) IsFalsePositive(result detectors.Result) (bool, string) {
+	if result.Verified {
+		return false, ""
+	}
+	// Inspect the original URI: normalization may discard an earlier userinfo
+	// password or a duplicate query password that is still sensitive.
+	value := result.GetPrimarySecretValue()
+	if value == "" {
+		value = result.SecretParts["connection_string"]
+	}
+	u, query, err := postgresRedactionURL(value)
+	if err != nil {
+		return false, ""
+	}
+	found := false
+	if u.User != nil {
+		if password, ok := u.User.Password(); ok && password != "" {
+			if password != "REDACTED" {
+				return false, ""
+			}
+			found = true
+		}
+	}
+	for key, passwords := range query {
+		if !strings.EqualFold(key, pgPassword) {
+			continue
+		}
+		for _, password := range passwords {
+			if password != "" {
+				if password != "REDACTED" {
+					return false, ""
+				}
+				found = true
+			}
+		}
+	}
+	if found {
+		return true, "Postgres passwords are redaction markers"
+	}
 	return false, ""
+}
+
+// A marker is safe only when every connection property has a reviewed role.
+// In particular, pgJDBC sslpassword and future vendor properties can carry
+// independent credentials that normalization would otherwise discard.
+func postgresRedactionURL(value string) (*url.URL, url.Values, error) {
+	unsupported := errors.New("Postgres source URI uses unsupported connection properties")
+	u, err := url.Parse(value)
+	if err != nil || u.Host == "" || u.Opaque != "" || u.Fragment != "" || strings.ContainsAny(u.Host, "(),=%\\") {
+		return nil, nil, unsupported
+	}
+	if !strings.EqualFold(u.Scheme, "postgres") && !strings.EqualFold(u.Scheme, "postgresql") {
+		return nil, nil, unsupported
+	}
+	query, err := url.ParseQuery(u.RawQuery)
+	if err != nil {
+		return nil, nil, unsupported
+	}
+	for key, values := range query {
+		switch strings.ToLower(key) {
+		case pgPassword, pgUser, pgHost, pgPort, pgDbname, pgSslmode, pgRequiressl, pgConnectTimeout:
+		case "ssl":
+			for _, value := range values {
+				if value != "" && !strings.EqualFold(value, "true") && !strings.EqualFold(value, "false") {
+					return nil, nil, unsupported
+				}
+			}
+		default:
+			return nil, nil, unsupported
+		}
+	}
+	return u, query, nil
 }
 
 func findUriMatches(data []byte, ignorePatterns []*regexp.Regexp) []uriMatch {

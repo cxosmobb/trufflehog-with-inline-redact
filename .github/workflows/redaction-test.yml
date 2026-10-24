@@ -29,7 +29,7 @@ jobs:
       matrix:
         os: [ubuntu-latest, windows-latest]
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 60
+    timeout-minutes: 75
     env:
       CGO_ENABLED: '0'
       GOMAXPROCS: '2'
@@ -96,7 +96,9 @@ jobs:
           test -n "$REDACTION_TEST_MAIN_BINARY"
           test -n "$REDACTION_TEST_BINARY"
           go test -p 2 -count=1 -timeout=30m ./pkg/redaction/... ./internal/sourceredact/... ./cmd/trufflehog-redact/...
+          go test -p 2 -count=1 ./pkg/decoders
           go test -p 2 -count=1 ./pkg/detectors/redaction_context.go ./pkg/detectors/redaction_context_test.go
+          go test -p 2 -count=1 ./pkg/detectors/jdbc ./pkg/detectors/postgres ./pkg/detectors/slackwebhook ./pkg/detectors/tru
           go test -p 2 -count=1 ./pkg/engine -run '^TestSelectDetectors'
       - name: Test and review the current static detector inventory
         run: |
@@ -104,3 +106,26 @@ jobs:
           go test -p 2 -count=1 ./scripts/redaction-audit.go ./scripts/redaction-audit_test.go
           go run ./scripts/redaction-audit.go > "$RUNNER_TEMP/redaction-detector-schema.json"
           cmp pkg/redaction/detector-schema.json "$RUNNER_TEMP/redaction-detector-schema.json"
+      - name: Test the complete pinned OWASP WrongSecrets source tree
+        env:
+          REDACTION_REQUIRE_IN_PLACE: '1'
+          REDACTION_WRONGSECRETS_REVISION: 1b51b6fbcaaba5fd69389d551d2f41ec922a4135
+        run: |
+          set -euo pipefail
+          temp="$RUNNER_TEMP"
+          if [[ "$RUNNER_OS" == Windows ]]; then
+            temp=$(cygpath -u "$RUNNER_TEMP")
+          fi
+          fixture="$temp/redaction-wrongsecrets"
+          mkdir -p "$fixture/git" "$fixture/input"
+          git -c core.hooksPath=/dev/null init --quiet "$fixture/git"
+          git -C "$fixture/git" -c core.hooksPath=/dev/null fetch --quiet --no-tags --depth=1 https://github.com/OWASP/wrongsecrets.git "$REDACTION_WRONGSECRETS_REVISION"
+          test "$(git -C "$fixture/git" rev-parse FETCH_HEAD)" = "$REDACTION_WRONGSECRETS_REVISION"
+          git -C "$fixture/git" -c core.autocrlf=false -c core.eol=lf archive --format=tar --output="$fixture/source.tar" FETCH_HEAD
+          tar -xf "$fixture/source.tar" -C "$fixture/input"
+          export REDACTION_WRONGSECRETS_FIXTURE="$fixture/input"
+          if [[ "$RUNNER_OS" == Windows ]]; then
+            export REDACTION_WRONGSECRETS_FIXTURE=$(cygpath -m "$fixture/input")
+          fi
+          # Cover two separately capped 15-minute redactions plus ordinary scans.
+          go test -p 2 -count=1 -v -timeout=40m ./internal/sourceredact -run '^TestWrongSecretsRepositoryInPlace$'
