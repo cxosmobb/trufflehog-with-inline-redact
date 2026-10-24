@@ -50,7 +50,7 @@ func nativeCommandAt(t *testing.T, dir string, args ...string) nativeResult {
 	binary := nativeBinary(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
 	defer cancel()
-	command := exec.CommandContext(ctx, binary, append([]string{"--no-update", "--no-verification", "--log-level=-1", "--json"}, args...)...)
+	command := exec.CommandContext(ctx, binary, append([]string{"--no-update", "--no-verification", "--log-level=-1"}, args...)...)
 	command.Dir = dir
 	var stdout, stderr bytes.Buffer
 	command.Stdout, command.Stderr = &stdout, &stderr
@@ -239,7 +239,7 @@ func TestNativeInPlaceFailAndOutputFilters(t *testing.T) {
 		flags []string
 		code  int
 	}{
-		{"fail", []string{"--fail"}, 183},
+		{"fail", []string{"--json", "--fail"}, 183},
 		{"output-filters", []string{"--json", "--results=verified", "--only-verified", "--filter-entropy=100"}, 0},
 	} {
 		t.Run(test.name, func(t *testing.T) {
@@ -272,7 +272,7 @@ func TestNativeInPlaceKeepsPathSelectionAndDirectoryFlag(t *testing.T) {
 	controls := t.TempDir()
 	include := writeSource(t, controls, "include.txt", "(first|excluded)\\.go$\n", 0600)
 	exclude := writeSource(t, controls, "exclude.txt", "excluded\\.go$\nexcluded$\n", 0600)
-	result := nativeCommand(t, "--include-detectors=Github", "filesystem", "--in-place", "--include-paths", include, "--exclude-paths", exclude, "--directory", dir)
+	result := nativeCommand(t, "--json", "--include-detectors=Github", "filesystem", "--in-place", "--include-paths", include, "--exclude-paths", exclude, "--directory", dir)
 	assertNativeFindings(t, result, 0)
 	assertSource(t, selected, strings.ReplaceAll(nativeTestSource, nativeTestSecret, "REDACTED"))
 	for _, path := range []string{fileExcluded, dirExcluded, notIncluded, git} {
@@ -295,7 +295,7 @@ func TestNativeInPlaceKeepsDetectorSelection(t *testing.T) {
 		t.Run(test.name, func(t *testing.T) {
 			dir := t.TempDir()
 			path := writeSource(t, dir, "original.go", nativeTestSource, 0600)
-			result := nativeCommand(t, "--include-detectors="+test.include, "--exclude-detectors="+test.exclude, "filesystem", "--in-place", path)
+			result := nativeCommand(t, "--json", "--include-detectors="+test.include, "--exclude-detectors="+test.exclude, "filesystem", "--in-place", path)
 			assertNativeFindings(t, result, 0)
 			want := nativeTestSource
 			if test.redacted {
@@ -314,6 +314,7 @@ func TestNativeInPlaceFailuresPreserveSourceAndWithholdSecrets(t *testing.T) {
 	controls := t.TempDir()
 	malformed := writeSource(t, controls, "invalid.yaml", "detectors: ["+nativeTestSecret, 0600)
 	badRules := writeSource(t, controls, "invalid-paths.txt", nativeTestSecret+"[\n", 0600)
+	invalidUTF8Rules := writeSource(t, controls, "invalid-utf8-paths.txt", nativeTestSecret+"\xff\n", 0600)
 	for _, test := range []struct {
 		name string
 		args []string
@@ -329,6 +330,8 @@ func TestNativeInPlaceFailuresPreserveSourceAndWithholdSecrets(t *testing.T) {
 		{"invalid-detector", []string{"--include-detectors=" + nativeTestSecret, "filesystem", path}},
 		{"invalid-config", []string{"--config", malformed, "filesystem", path}},
 		{"invalid-path-rule", []string{"filesystem", "--include-paths", badRules, path}},
+		{"invalid-utf8-path-rule", []string{"filesystem", "--include-paths", invalidUTF8Rules, path}},
+		{"private-validator-flag", []string{"--internal-validate-redaction-filters", "filesystem", path}},
 		{"git-source", []string{"git", dir}},
 		{"stdin-source", []string{"stdin"}},
 	} {
@@ -395,7 +398,7 @@ func TestNativeFalseInPlaceAssignmentsNeverEditSources(t *testing.T) {
 			path := writeSource(t, dir, "original.go", nativeTestSource, 0600)
 			literalFalse := writeSource(t, dir, "false", nativeTestSource, 0600)
 			for _, argumentFile := range []bool{false, true} {
-				args := []string{"--include-detectors=Github", "filesystem", spelling, path}
+				args := []string{"--json", "--include-detectors=Github", "filesystem", spelling, path}
 				if argumentFile {
 					arguments := writeSource(t, t.TempDir(), "arguments.txt", strings.Join(args, "\n")+"\n", 0600)
 					args = []string{"@" + arguments}
@@ -420,7 +423,7 @@ func TestNativeNestedArgumentFilesPreserveEditIntentAndBounds(t *testing.T) {
 			path := writeSource(t, dir, "original.go", nativeTestSource, 0600)
 			literalFalse := writeSource(t, dir, "false", nativeTestSource, 0600)
 			controls := t.TempDir()
-			inner := writeSource(t, controls, "inner.txt", strings.Join([]string{"--include-detectors=Github", "filesystem", "--in-place=" + strconv.FormatBool(enabled), path}, "\n")+"\n", 0600)
+			inner := writeSource(t, controls, "inner.txt", strings.Join([]string{"--json", "--include-detectors=Github", "filesystem", "--in-place=" + strconv.FormatBool(enabled), path}, "\n")+"\n", 0600)
 			outer := writeSource(t, controls, "outer.txt", "# preserve native argument-file comments\n@"+inner+"\n", 0600)
 			result := nativeCommandAt(t, dir, "@"+outer)
 			assertNativeFindings(t, result, 0)

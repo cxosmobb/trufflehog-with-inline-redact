@@ -4,11 +4,15 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"io"
 	"os"
+	"os/exec"
+	"path/filepath"
 	"strconv"
 	"strings"
+	"unicode/utf8"
 
 	"github.com/wasilibs/go-re2"
 
@@ -22,11 +26,12 @@ import (
 )
 
 var (
-	inlineInPlace  = cli.Flag("in-place", "Redact original local filesystem inputs after scanning, preserving ordinary findings and output flags. Use with filesystem.").Bool()
-	inlineMaxBytes = cli.Flag("redaction-max-bytes", "Maximum bytes per file for --in-place; exceeding the limit fails.").Default("16777216").Int64()
-	inlineMaxTotal = cli.Flag("redaction-max-total-bytes", "Maximum total source bytes for --in-place.").Default("268435456").Int64()
-	inlineMaxFiles = cli.Flag("redaction-max-files", "Maximum files and directories for --in-place.").Default("10000").Int()
-	inlineTimeout  = cli.Flag("redaction-timeout", "Time budget for --in-place scanning and commit; blocking reads/calls can overrun it.").Default("5m").Duration()
+	inlineInPlace         = cli.Flag("in-place", "Redact original local filesystem inputs after scanning, preserving ordinary findings and output flags. Use with filesystem.").Bool()
+	inlineValidateFilters = cli.Flag("internal-validate-redaction-filters", "Validate source-redaction path filters in an isolated process.").Hidden().Bool()
+	inlineMaxBytes        = cli.Flag("redaction-max-bytes", "Maximum bytes per file for --in-place; exceeding the limit fails.").Default("16777216").Int64()
+	inlineMaxTotal        = cli.Flag("redaction-max-total-bytes", "Maximum total source bytes for --in-place.").Default("268435456").Int64()
+	inlineMaxFiles        = cli.Flag("redaction-max-files", "Maximum files and directories for --in-place.").Default("10000").Int()
+	inlineTimeout         = cli.Flag("redaction-timeout", "Time budget for --in-place scanning and commit; blocking reads/calls can overrun it.").Default("5m").Duration()
 )
 
 // Keep parser diagnostics secret-free for an edit request, including malformed
@@ -141,7 +146,9 @@ func runInlineRedaction(ctx trContext.Context, conf *config.Config, scan func(tr
 	if err != nil {
 		return err
 	}
-	pathFilter, skipDirectory, err := inlinePathFilter(*filesystemScanIncludePaths, *filesystemScanExcludePaths)
+	ctx, cancel := trContext.WithTimeout(ctx, *inlineTimeout)
+	defer cancel()
+	pathFilter, skipDirectory, err := inlinePathFilter(ctx, *filesystemScanIncludePaths, *filesystemScanExcludePaths)
 	if err != nil {
 		return err
 	}
@@ -149,8 +156,6 @@ func runInlineRedaction(ctx trContext.Context, conf *config.Config, scan func(tr
 		detectors.OverrideDetectorTimeout(*detectorTimeout)
 	}
 	paths := append(append([]string{}, *filesystemPaths...), *filesystemDirectories...)
-	ctx, cancel := trContext.WithTimeout(ctx, *inlineTimeout)
-	defer cancel()
 	return sourceredact.RedactInPlace(ctx, scanner, paths, sourceredact.Options{
 		MaxBytes: *inlineMaxBytes, MaxTotalBytes: *inlineMaxTotal, MaxFiles: *inlineMaxFiles,
 		IncludePath: pathFilter, SkipDirectory: skipDirectory, NativePathFilters: true,
@@ -160,8 +165,8 @@ func runInlineRedaction(ctx trContext.Context, conf *config.Config, scan func(tr
 
 // Match native include/exclude regex semantics, but never print config contents,
 // and never call the ordinary filter loader's fatal exit during a transaction.
-func inlinePathFilter(includeFile, excludeFile string) (func(string) bool, func(string) bool, error) {
-	readRules := func(path string) ([]*re2.Regexp, error) {
+func inlinePathFilter(ctx context.Context, includeFile, excludeFile string) (func(string) bool, func(string) bool, error) {
+	readRules := func(path string) ([]string, error) {
 		if path == "" {
 			return nil, nil
 		}
@@ -169,7 +174,7 @@ func inlinePathFilter(includeFile, excludeFile string) (func(string) bool, func(
 		if err != nil {
 			return nil, err
 		}
-		var rules []*re2.Regexp
+		var rules []string
 		ignoredLine := re2.MustCompile(`^\s*(#|$)`)
 		scanner := bufio.NewScanner(bytes.NewReader(data))
 		scanner.Buffer(make([]byte, 4096), len(data)+1)
@@ -178,22 +183,44 @@ func inlinePathFilter(includeFile, excludeFile string) (func(string) bool, func(
 			if ignoredLine.MatchString(line) {
 				continue
 			}
-			rule, err := re2.Compile(line)
-			if err != nil || len(rules) >= 1024 {
+			if len(rules) >= 1024 {
 				return nil, errors.New("invalid or excessive path filter rules")
 			}
-			rules = append(rules, rule)
+			rules = append(rules, line)
 		}
 		if scanner.Err() != nil {
 			return nil, errors.New("cannot read path filter rules")
 		}
 		return rules, nil
 	}
-	include, err := readRules(includeFile)
+	includePatterns, err := readRules(includeFile)
 	if err != nil {
 		return nil, nil, err
 	}
-	exclude, err := readRules(excludeFile)
+	excludePatterns, err := readRules(excludeFile)
+	if err != nil {
+		return nil, nil, err
+	}
+	patterns := append(append([]string{}, includePatterns...), excludePatterns...)
+	if err := checkInlineFilterPatterns(ctx, patterns); err != nil {
+		return nil, nil, err
+	}
+	compileRules := func(patterns []string) ([]*re2.Regexp, error) {
+		rules := make([]*re2.Regexp, 0, len(patterns))
+		for _, pattern := range patterns {
+			rule, err := re2.Compile(pattern)
+			if err != nil {
+				return nil, errors.New("invalid path filter rules")
+			}
+			rules = append(rules, rule)
+		}
+		return rules, nil
+	}
+	include, err := compileRules(includePatterns)
+	if err != nil {
+		return nil, nil, err
+	}
+	exclude, err := compileRules(excludePatterns)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -210,6 +237,69 @@ func inlinePathFilter(includeFile, excludeFile string) (func(string) bool, func(
 		}, func(path string) bool {
 			return matches(exclude, path)
 		}, nil
+}
+
+// The RE2 backend logs malformed patterns directly to stderr even when its
+// returned error is discarded. Validate both files in one isolated invocation
+// of this executable before compiling in the parent. Patterns travel only over
+// stdin, and the child's output is discarded; accepted syntax stays native RE2.
+func checkInlineFilterPatterns(ctx context.Context, patterns []string) error {
+	if len(patterns) == 0 {
+		return nil
+	}
+	// JSON replaces invalid UTF-8; reject it before transport so the child
+	// validates exactly the bytes later passed to the UTF-8 RE2 compiler.
+	for _, pattern := range patterns {
+		if !utf8.ValidString(pattern) {
+			return errors.New("invalid path filter rules")
+		}
+	}
+	data, err := json.Marshal(patterns)
+	if err != nil {
+		return errors.New("cannot validate path filter rules")
+	}
+	executable, err := os.Executable()
+	if err != nil {
+		return errors.New("cannot validate path filter rules")
+	}
+	executable, err = filepath.Abs(executable)
+	if err != nil {
+		return errors.New("cannot validate path filter rules")
+	}
+	child := exec.CommandContext(ctx, executable, "--no-update", "--internal-validate-redaction-filters", "filesystem")
+	child.Env = append(os.Environ(), "TRUFFLEHOG_INTERNAL_FILTER_VALIDATION=1")
+	child.Stdin = bytes.NewReader(data)
+	child.Stdout, child.Stderr = io.Discard, io.Discard
+	if err := child.Run(); err != nil {
+		return errors.New("invalid path filter rules or validation failed")
+	}
+	return nil
+}
+
+// validateInlineFilters is the isolated helper's entire operation. Its caller
+// exits before logger, updater, source scanning or transaction initialization.
+func validateInlineFilters(input io.Reader) int {
+	data, err := io.ReadAll(io.LimitReader(input, (16<<20)+1))
+	if err != nil || len(data) > 16<<20 {
+		return 1
+	}
+	var patterns []string
+	if err := json.Unmarshal(data, &patterns); err != nil || len(patterns) > 2048 {
+		return 1
+	}
+	total := 0
+	for _, pattern := range patterns {
+		if len(pattern) > (2<<20)-total {
+			return 1
+		}
+		total += len(pattern)
+	}
+	for _, pattern := range patterns {
+		if _, err := re2.Compile(pattern); err != nil {
+			return 1
+		}
+	}
+	return 0
 }
 
 func inlineConfigBytes(path string) ([]byte, error) {

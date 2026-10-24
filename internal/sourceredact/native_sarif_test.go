@@ -14,8 +14,7 @@ import (
 	"time"
 )
 
-// Keep this runner independent of nativeCommand's implicit --json: the native
-// printer selection gives JSON precedence over SARIF when both flags are set.
+// Select SARIF without JSON, which takes precedence when both flags are set.
 func nativeSARIFCommand(t *testing.T, args ...string) nativeResult {
 	t.Helper()
 	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)

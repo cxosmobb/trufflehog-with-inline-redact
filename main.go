@@ -424,6 +424,12 @@ func syncLogs(syncFn func() error) {
 }
 
 func main() {
+	if *inlineValidateFilters {
+		if os.Getenv("TRUFFLEHOG_INTERNAL_FILTER_VALIDATION") != "1" {
+			os.Exit(1)
+		}
+		os.Exit(validateInlineFilters(os.Stdin))
+	}
 
 	// setup logger
 	logFormat := log.WithConsoleSink
